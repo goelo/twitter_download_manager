@@ -24,6 +24,54 @@ const TIME_PRESETS: Array<{ key: TimePreset; label: string }> = [
   { key: 'all', label: '全部' },
 ];
 
+const DEFAULT_TASK_FORM: TaskFormValues = {
+  task_type: 'user_media',
+  account_id: 0,
+  targets: '',
+  time_range: rangeFromPreset('90d'),
+  max_concurrent_requests: 8,
+  has_retweet: false,
+  high_lights: false,
+  likes: false,
+  has_video: true,
+  down_log: false,
+  auto_sync: false,
+  md_output: false,
+  image_format: 'orig',
+  media_count_limit: 350,
+  proxy: '',
+  proxy_id: null,
+  tag: '',
+  advanced_filter: '',
+  down_count: 50,
+  media_latest: false,
+  text_down: false,
+  media_down: true,
+  min_replies: 1,
+  min_faves: 0,
+  min_retweets: 0,
+  search_advanced: '',
+};
+
+const DEFAULT_RUN_FORM: RunConfig = {
+  save_path: '',
+  user_lst: '',
+  cookie: '',
+  time_range: ALL_TIME_RANGE,
+  has_retweet: false,
+  high_lights: false,
+  likes: false,
+  down_log: false,
+  autoSync: false,
+  image_format: 'orig',
+  has_video: true,
+  log_output: true,
+  max_concurrent_requests: 8,
+  proxy: '',
+  md_output: false,
+  media_count_limit: 350,
+};
+
 function statusTone(status: string): BadgeTone {
   if (status === 'completed' || status === 'active' || status === 'finished') return 'success';
   if (status === 'running') return 'primary';
@@ -132,16 +180,19 @@ function Shell({ children }: { children: React.ReactNode }) {
       <header className="sticky top-0 z-20 border-b border-[hsl(var(--line))] bg-[rgba(229,234,240,0.92)] backdrop-blur">
         <div className="mx-auto flex min-h-16 max-w-[1440px] flex-wrap items-center gap-3 px-4 py-3">
           <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] shadow-sm">
-              <img src="/logo.svg" alt="X 舆情采集工作台" className="h-9 w-9" />
+            <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#ffffff_0%,#eff6ff_100%)] shadow-sm">
+              <img src="/logo.svg" alt="X 采集工作台" className="h-9 w-9" />
             </div>
-            <div className="text-lg font-semibold leading-tight">X 舆情采集工作台</div>
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-[hsl(var(--primary-dark))]">采样工作台</div>
+              <div className="text-lg font-semibold leading-tight">X 采集工作台</div>
+            </div>
           </div>
           <nav className="flex flex-wrap items-center gap-2 md:ml-4">
             <NavItem to="/" icon={<BarChart3 className="h-4 w-4" />} label="看板" />
             <NavItem to="/run" icon={<Activity className="h-4 w-4" />} label="运行控制" />
             <NavItem to="/tasks" icon={<FolderKanban className="h-4 w-4" />} label="任务" />
-            <NavItem to="/tasks/new" icon={<Plus className="h-4 w-4" />} label="新建" />
+            <NavItem to="/tasks/new" icon={<Plus className="h-4 w-4" />} label="新建任务" />
             <NavItem to="/accounts" icon={<ShieldCheck className="h-4 w-4" />} label="账号" />
             <NavItem to="/proxies" icon={<Network className="h-4 w-4" />} label="代理" />
           </nav>
@@ -208,11 +259,11 @@ function LoginPage() {
         <Card className="w-full">
           <CardHeader>
             <div className="flex items-center gap-3">
-              <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] shadow-sm">
-                <img src="/logo.svg" alt="X 舆情采集工作台" className="h-9 w-9" />
+              <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#ffffff_0%,#eff6ff_100%)] shadow-sm">
+                <img src="/logo.svg" alt="X 采集工作台" className="h-9 w-9" />
               </div>
               <div>
-                <h1 className="text-xl font-semibold">登录工作台</h1>
+                <h1 className="text-xl font-semibold">登录采集工作台</h1>
                 <p className="mt-1 text-sm text-[hsl(var(--muted))]">使用部署时配置的管理员账号进入。</p>
               </div>
             </div>
@@ -267,7 +318,7 @@ function AuthenticatedApp() {
 
 function ActionBar({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex flex-wrap items-center justify-end gap-2 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-4 py-3">
+    <div className="flex flex-wrap items-center justify-end gap-2 rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#ffffff_0%,hsl(var(--panel-soft))_100%)] px-4 py-3">
       {children}
     </div>
   );
@@ -284,15 +335,15 @@ function DashboardPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-3xl font-semibold">X 舆情采集看板</h1>
+        <h1 className="text-3xl font-semibold">X 采集工作台</h1>
         <p className="mt-2 max-w-3xl text-sm text-[hsl(var(--muted))]">
-          面向内部研究和授权账号的数据采集项目，覆盖账号、关键词、评论和主页资料任务。
+          面向日常采样、任务排队和结果归档的工作台，覆盖账号、关键词、评论和主页资料任务。
         </p>
       </div>
       <ActionBar>
         <Button onClick={() => (window.location.href = '/tasks/new')}>
           <Plus className="h-4 w-4" />
-          新建采集任务
+          新建任务
         </Button>
         <Button variant="secondary" onClick={() => (window.location.href = '/tasks')}>
           <FolderKanban className="h-4 w-4" />
@@ -393,36 +444,63 @@ function DashboardPage() {
         </Card>
       </div>
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <Target className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
-            <h2 className="font-semibold">任务模板</h2>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            {dashboard.templates.map((template) => (
-              <DemoTemplate key={template.name} template={template} />
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+      <TemplateShelf />
     </div>
   );
 }
 
-function DemoTemplate({ template }: { template: Dashboard['templates'][number] }) {
+function TemplateShelf() {
+  const navigate = useNavigate();
   return (
-    <div className="flex min-h-40 flex-col justify-between rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-4">
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Target className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
+            <h2 className="font-semibold">快捷模板</h2>
+          </div>
+          <div className="text-sm text-[hsl(var(--muted))]">点击后直接带入参数</div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {taskTemplates.map((template) => (
+            <TemplateCard
+              key={template.id}
+              template={template}
+              onClick={() => navigate(`${template.targetPath}?template=${encodeURIComponent(template.id)}`)}
+            />
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function TemplateCard({ template, onClick }: { template: TaskTemplate; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="group flex min-h-44 flex-col justify-between rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#ffffff_0%,hsl(var(--panel-soft))_100%)] p-4 text-left transition-all duration-200 hover:-translate-y-[2px] hover:border-[hsl(var(--primary))] hover:shadow-[0_14px_30px_rgba(37,99,235,0.10)]"
+    >
       <div>
-        <div className="font-semibold">{template.name}</div>
-        <p className="mt-2 text-sm text-[hsl(var(--muted))]">{template.description}</p>
+        <div className="flex items-center gap-2">
+          <div className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-[rgba(37,99,235,0.12)] text-[hsl(var(--primary-dark))] transition-colors group-hover:bg-[rgba(37,99,235,0.16)]">
+            <ChevronRight className="h-4 w-4" />
+          </div>
+          <div className="text-base font-semibold text-[hsl(var(--text))]">{template.name}</div>
+        </div>
+        <p className="mt-3 text-sm leading-6 text-[hsl(var(--muted))]">{template.description}</p>
       </div>
-      <Button className="mt-4 w-full" variant="secondary" onClick={() => (window.location.href = `/tasks/new?template=${encodeURIComponent(template.name)}`)}>
-        使用模板
-      </Button>
-    </div>
+      <div className="mt-4 flex items-center justify-between">
+        <Badge tone="primary">{template.task_type}</Badge>
+        <span className="inline-flex items-center gap-1 text-sm font-semibold text-[hsl(var(--primary-dark))]">
+          一键填充
+          <ArrowRight className="h-4 w-4" />
+        </span>
+      </div>
+    </button>
   );
 }
 
@@ -641,40 +719,12 @@ function TaskRow({ task }: { task: Task }) {
 
 function TaskFormPage() {
   const { data: accountData } = useQuery({ queryKey: ['accounts'], queryFn: () => api.accounts() });
-  const { data: dashboardData } = useQuery({ queryKey: ['dashboard'], queryFn: () => api.dashboard() });
   const { data: proxiesData } = useQuery({ queryKey: ['proxies'], queryFn: () => api.proxies() });
   const [searchParams] = useSearchParams();
   const accounts = accountData?.accounts;
   const proxies = proxiesData?.proxies || [];
   const usableProxies = proxies.filter((proxy) => proxy.enabled && proxy.status === 'active');
-  const [form, setForm] = useState({
-    task_type: 'user_media',
-    account_id: 0,
-    targets: '',
-    time_range: rangeFromPreset('90d'),
-    max_concurrent_requests: 8,
-    has_retweet: false,
-    high_lights: false,
-    likes: false,
-    has_video: true,
-    down_log: false,
-    auto_sync: false,
-    md_output: false,
-    image_format: 'orig',
-    media_count_limit: 350,
-    proxy: '',
-    proxy_id: null as number | null,
-    tag: '',
-    advanced_filter: '',
-    down_count: 50,
-    media_latest: false,
-    text_down: false,
-    media_down: true,
-    min_replies: 1,
-    min_faves: 0,
-    min_retweets: 0,
-    search_advanced: '',
-  });
+  const [form, setForm] = useState<TaskFormValues>(DEFAULT_TASK_FORM);
   const [timePreset, setTimePreset] = useState<TimePreset>('90d');
   const [error, setError] = useState('');
   const create = useMutation({
@@ -698,17 +748,16 @@ function TaskFormPage() {
   }, [accounts, form.account_id]);
 
   useEffect(() => {
-    const templateName = searchParams.get('template');
-    const template = dashboardData?.templates.find((item) => item.name === templateName);
+    const templateId = searchParams.get('template');
+    const template = getTaskTemplateById(templateId);
     if (template) {
-      const payload = template.payload as { time_range?: string };
-      setForm((prev) => ({ ...prev, ...template.payload }));
-      if (payload.time_range) {
-        const matchedPreset = TIME_PRESETS.find((item) => rangeFromPreset(item.key) === payload.time_range);
+      setForm((prev) => ({ ...DEFAULT_TASK_FORM, ...prev, ...template.payload, task_type: template.payload.task_type || prev.task_type }));
+      if (template.payload.time_range) {
+        const matchedPreset = TIME_PRESETS.find((item) => rangeFromPreset(item.key) === template.payload.time_range);
         setTimePreset(matchedPreset?.key || 'custom');
       }
     }
-  }, [dashboardData, searchParams]);
+  }, [searchParams]);
 
   const timeError = timeRangeError(form.time_range);
   const applyTimePreset = (preset: TimePreset) => {
@@ -761,7 +810,7 @@ function TaskFormPage() {
           <CardHeader><h3 className="font-semibold">基础</h3></CardHeader>
           <CardContent className="space-y-4">
             <Field label="任务类型">
-              <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.task_type} onChange={(e) => setForm((prev) => ({ ...prev, task_type: e.target.value }))}>
+              <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.task_type} onChange={(e) => setForm((prev) => ({ ...prev, task_type: e.target.value as TaskType }))}>
                 <option value="user_media">用户媒体</option>
                 <option value="search">搜索/Tag</option>
                 <option value="text">用户文本</option>
@@ -1354,33 +1403,24 @@ function RunControlPage() {
   const { data: configData } = useQuery({ queryKey: ['run-config'], queryFn: () => api.runConfig() });
   const { data: statusData } = useQuery({ queryKey: ['run-status'], queryFn: () => api.runStatus(), refetchInterval: 2000 });
   const { data: proxiesData } = useQuery({ queryKey: ['proxies'], queryFn: () => api.proxies(), refetchInterval: 8000 });
+  const [searchParams] = useSearchParams();
   const proxies = proxiesData?.proxies || [];
   const usableProxies = proxies.filter((proxy) => proxy.enabled && proxy.status === 'active');
   const [preflightErrors, setPreflightErrors] = useState<string[]>([]);
   const [copyStatus, setCopyStatus] = useState('');
-  const [form, setForm] = useState({
-    save_path: '',
-    user_lst: '',
-    cookie: '',
-    time_range: '1990-01-01:2030-01-01',
-    has_retweet: false,
-    high_lights: false,
-    likes: false,
-    down_log: false,
-    autoSync: false,
-    image_format: 'orig',
-    has_video: true,
-    log_output: true,
-    max_concurrent_requests: 8,
-    proxy: '',
-    proxy_id: null as number | null,
-    md_output: false,
-    media_count_limit: 350,
-  });
+  const [form, setForm] = useState<RunConfig>(DEFAULT_RUN_FORM);
 
   useEffect(() => {
     if (configData) setForm((prev) => ({ ...prev, ...configData }));
   }, [configData]);
+
+  useEffect(() => {
+    const templateId = searchParams.get('template');
+    const template = getTaskTemplateById(templateId);
+    if (template?.runPayload) {
+      setForm((prev) => ({ ...DEFAULT_RUN_FORM, ...prev, ...template.runPayload, cookie: prev.cookie || '', save_path: prev.save_path || '' }));
+    }
+  }, [searchParams]);
 
   const start = useMutation({
     mutationFn: () => api.runStart({ ...form, proxy_id: form.proxy_id ?? undefined }),
@@ -1436,6 +1476,41 @@ function RunControlPage() {
           复制日志
         </Button>
       </ActionBar>
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Zap className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
+              <h3 className="font-semibold">快速预设</h3>
+            </div>
+            <div className="text-sm text-[hsl(var(--muted))]">点击即可填入运行参数</div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {taskTemplates.map((template) => (
+              <button
+                key={template.id}
+                type="button"
+                className="group flex min-h-36 flex-col justify-between rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#ffffff_0%,hsl(var(--panel-soft))_100%)] p-4 text-left transition-all duration-200 hover:-translate-y-[2px] hover:border-[hsl(var(--primary))] hover:shadow-[0_14px_30px_rgba(37,99,235,0.10)]"
+                onClick={() => setForm((prev) => ({ ...DEFAULT_RUN_FORM, ...prev, ...template.runPayload, cookie: prev.cookie || '' }))}
+              >
+                <div>
+                  <div className="text-base font-semibold">{template.name}</div>
+                  <p className="mt-2 text-sm text-[hsl(var(--muted))]">{template.description}</p>
+                </div>
+                <div className="mt-4 flex items-center justify-between">
+                  <Badge tone="primary">{template.task_type}</Badge>
+                  <span className="inline-flex items-center gap-1 text-sm font-semibold text-[hsl(var(--primary-dark))]">
+                    套用
+                    <ArrowRight className="h-4 w-4" />
+                  </span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
 
       {preflightErrors.length > 0 && (
         <div className="rounded-lg border border-[hsl(var(--warning))] bg-[rgba(245,158,11,0.12)] px-4 py-3 text-sm text-[hsl(var(--text))]">
