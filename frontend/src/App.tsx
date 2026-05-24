@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, BarChart3, CircleUserRound, FileArchive, FolderKanban, LogOut, Plus, RefreshCcw, ShieldCheck, Play, Square, Target, TrendingUp, Network } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, BarChart3, ChevronRight, CircleUserRound, Clock3, Copy, FileArchive, FolderKanban, Info, LogOut, Network, Plus, RefreshCcw, ShieldCheck, Play, Square, Target, TrendingUp, Zap } from 'lucide-react';
 import { Navigate, NavLink, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from './lib/api';
 import { Badge } from './components/ui/badge';
@@ -8,8 +8,9 @@ import { Button } from './components/ui/button';
 import { Card, CardContent, CardHeader } from './components/ui/card';
 import { Input } from './components/ui/input';
 import { Textarea } from './components/ui/textarea';
-import type { Account, Dashboard, ProxyItem, RunConfig, RunStatus, Task } from './lib/types';
+import type { Account, Dashboard, ProxyItem, RunConfig, RunStatus, Task, TaskFormValues, TaskType } from './lib/types';
 import { cn } from './lib/utils';
+import { getTaskTemplateById, taskTemplates, type TaskTemplate } from './lib/templates';
 
 type BadgeTone = 'neutral' | 'success' | 'warning' | 'danger' | 'primary';
 type TimePreset = '7d' | '30d' | '90d' | 'year' | 'all' | 'custom';
@@ -24,11 +25,61 @@ const TIME_PRESETS: Array<{ key: TimePreset; label: string }> = [
 ];
 
 function statusTone(status: string): BadgeTone {
-  if (status === 'completed' || status === 'active') return 'success';
+  if (status === 'completed' || status === 'active' || status === 'finished') return 'success';
   if (status === 'running') return 'primary';
-  if (status === 'queued' || status === 'rate_limited' || status === 'partial_failed' || status === 'network_failed') return 'warning';
-  if (status === 'failed' || status === 'cancelled' || status === 'expired' || status === 'auth_expired') return 'danger';
+  if (status === 'queued' || status === 'rate_limited' || status === 'partial_failed' || status === 'network_failed' || status === 'stopping' || status === 'disabled') return 'warning';
+  if (status === 'failed' || status === 'cancelled' || status === 'expired' || status === 'auth_expired' || status === 'target_unavailable' || status === 'api_changed') return 'danger';
   return 'neutral';
+}
+
+function statusLabel(status: string) {
+  return {
+    queued: '排队中',
+    running: '运行中',
+    completed: '已完成',
+    finished: '已完成',
+    failed: '已失败',
+    cancelled: '已取消',
+    partial_failed: '部分失败',
+    rate_limited: '触发限流',
+    auth_expired: '会话失效',
+    network_failed: '网络异常',
+    target_unavailable: '目标不可用',
+    api_changed: '接口变化',
+    active: '正常',
+    expired: '已失效',
+    disabled: '已停用',
+    idle: '空闲',
+    stopping: '停止中',
+    stopped: '已停止',
+  }[status] || status;
+}
+
+function statusDescription(status: string) {
+  return {
+    queued: '等待 worker 执行。',
+    running: '任务正在采集或下载。',
+    completed: '任务执行完成。',
+    finished: '任务执行完成。',
+    failed: '任务异常结束。',
+    cancelled: '任务已取消。',
+    partial_failed: '部分步骤成功，部分步骤失败。',
+    rate_limited: '触发了接口限流，稍后可重试。',
+    auth_expired: '账号会话失效，需要重新登录或更新 Cookie。',
+    network_failed: '网络、代理或出口连接异常。',
+    target_unavailable: '目标不可访问，或内容权限不足。',
+    api_changed: '接口结构可能变化，需要排查。',
+    active: '当前可用于任务。',
+    expired: '当前账号已失效。',
+    disabled: '当前代理已停用。',
+    idle: '当前没有运行中的任务。',
+    stopping: '正在停止当前任务。',
+    stopped: '任务已停止。',
+  }[status] || '';
+}
+
+function displayStatus(status: string) {
+  return `${statusLabel(status)}${statusDescription(status) ? ` · ${statusDescription(status)}` : ''}`;
 }
 
 function formatDate(date: Date) {
@@ -78,10 +129,10 @@ function Shell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-[hsl(var(--bg))] text-[hsl(var(--text))]">
-      <header className="sticky top-0 z-20 border-b border-[hsl(var(--line))] bg-[rgba(248,250,252,0.94)] backdrop-blur">
+      <header className="sticky top-0 z-20 border-b border-[hsl(var(--line))] bg-[rgba(229,234,240,0.92)] backdrop-blur">
         <div className="mx-auto flex min-h-16 max-w-[1440px] flex-wrap items-center gap-3 px-4 py-3">
           <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-white shadow-sm">
+            <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] shadow-sm">
               <img src="/logo.svg" alt="X 舆情采集工作台" className="h-9 w-9" />
             </div>
             <div className="text-lg font-semibold leading-tight">X 舆情采集工作台</div>
@@ -157,7 +208,7 @@ function LoginPage() {
         <Card className="w-full">
           <CardHeader>
             <div className="flex items-center gap-3">
-              <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-white shadow-sm">
+              <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] shadow-sm">
                 <img src="/logo.svg" alt="X 舆情采集工作台" className="h-9 w-9" />
               </div>
               <div>
@@ -286,8 +337,16 @@ function DashboardPage() {
                         <div className="mt-1 text-xs text-[hsl(var(--muted))]">{task.task_type}</div>
                       </td>
                       <td className="max-w-[260px] truncate px-4 py-3">{task.target}</td>
-                      <td className="px-4 py-3"><Badge tone={statusTone(task.status)}>{task.status}</Badge></td>
-                      <td className="px-4 py-3">{task.summary.records} / {task.summary.files}</td>
+                      <td className="px-4 py-3">
+                        <div className="space-y-1">
+                          <Badge tone={statusTone(task.status)}>{statusLabel(task.status)}</Badge>
+                          <div className="max-w-[260px] text-xs text-[hsl(var(--muted))]">{statusDescription(task.status)}</div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="font-medium">{task.summary.records} / {task.summary.files}</div>
+                        <div className="text-xs text-[hsl(var(--muted))]">记录 / 文件</div>
+                      </td>
                       <td className="px-4 py-3">{task.created_at}</td>
                     </tr>
                   ))}
@@ -312,11 +371,19 @@ function DashboardPage() {
               <InfoCard title="账号 active" value={String(health?.accounts?.active ?? 0)} />
               <InfoCard title="代理 active" value={String(health?.proxies?.active ?? 0)} />
             </div>
-            <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2 text-sm">
-              <div className="font-medium">健康检查：{health?.running ? '运行中' : '空闲'}</div>
-              <div className="mt-1 text-[hsl(var(--muted))]">上次完成：{health?.last_finished_at || '-'}</div>
-              {health?.last_error && <div className="mt-1 text-[hsl(var(--danger))]">{health.last_error}</div>}
-            </div>
+              <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2 text-sm">
+                <div className="flex items-center gap-2 font-medium">
+                  {health?.running ? <Activity className="h-4 w-4 text-[hsl(var(--primary-dark))]" /> : <Clock3 className="h-4 w-4 text-[hsl(var(--muted))]" />}
+                  健康检查：{health?.running ? '运行中' : '空闲'}
+                </div>
+                <div className="mt-1 text-[hsl(var(--muted))]">上次完成：{health?.last_finished_at || '-'}</div>
+                {health?.last_error && (
+                  <div className="mt-2 flex items-start gap-2 rounded-lg border border-[rgba(220,38,38,0.18)] bg-[rgba(220,38,38,0.06)] px-3 py-2 text-[hsl(var(--danger))]">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>{health.last_error}</span>
+                  </div>
+                )}
+              </div>
             {dashboard.compliance_notes.map((note) => (
               <div key={note} className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2 text-sm text-[hsl(var(--muted))]">
                 {note}
@@ -507,7 +574,8 @@ function validateRunForm(form: RunConfig, proxies: ProxyItem[]) {
 function runCopyText(status: RunStatus) {
   return [
     '运行控制排查信息',
-    `状态: ${status.status}`,
+    `状态: ${statusLabel(status.status)}`,
+    `状态说明: ${statusDescription(status.status) || '-'}`,
     `消息: ${status.message}`,
     `运行时长: ${status.running_for ?? '-'}s`,
     `返回码: ${status.return_code ?? '-'}`,
@@ -525,7 +593,8 @@ function taskCopyText(task: Task) {
     '任务排查信息',
     `任务: #${task.id} ${task.title}`,
     `类型: ${task.task_type}`,
-    `状态: ${task.status}`,
+    `状态: ${statusLabel(task.status)}`,
+    `状态说明: ${statusDescription(task.status) || '-'}`,
     `重试: ${task.retry_count}/${task.max_retries}`,
     `最后重试: ${task.last_retry_at || '-'}`,
     `错误类型: ${task.last_error_type || '-'}`,
@@ -669,6 +738,24 @@ function TaskFormPage() {
       </ActionBar>
       {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(220,38,38,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
 
+      <Card>
+        <CardHeader>
+          <div>
+            <h3 className="font-semibold">采集时间范围</h3>
+            <p className="mt-1 text-sm text-[hsl(var(--muted))]">先选采集周期，系统会自动转换成任务需要的日期格式。</p>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <TimeRangePicker
+            value={form.time_range}
+            preset={timePreset}
+            error={timeError}
+            onPresetChange={applyTimePreset}
+            onCustomChange={applyCustomTimeRange}
+          />
+        </CardContent>
+      </Card>
+
       <div className="grid gap-4 xl:grid-cols-2">
         <Card>
           <CardHeader><h3 className="font-semibold">基础</h3></CardHeader>
@@ -693,15 +780,6 @@ function TaskFormPage() {
             </Field>
             <Field label="目标用户 / 推文链接">
               <Textarea value={form.targets} onChange={(e) => setForm((prev) => ({ ...prev, targets: e.target.value }))} rows={4} />
-            </Field>
-            <Field label="时间范围">
-              <TimeRangePicker
-                value={form.time_range}
-                preset={timePreset}
-                error={timeError}
-                onPresetChange={applyTimePreset}
-                onCustomChange={applyCustomTimeRange}
-              />
             </Field>
             <Field label="并发下载数">
               <Input type="number" value={form.max_concurrent_requests} onChange={(e) => setForm((prev) => ({ ...prev, max_concurrent_requests: Number(e.target.value) }))} />
@@ -894,7 +972,7 @@ function TaskDetailPage({ id }: { id: number }) {
       {copyStatus && <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2 text-sm text-[hsl(var(--muted))]">{copyStatus}</div>}
 
       <div className="grid gap-3 md:grid-cols-4">
-        <InfoCard title="状态" value={task.status} />
+        <InfoCard title="状态" value={displayStatus(task.status)} />
         <InfoCard title="开始时间" value={task.started_at || '-'} />
         <InfoCard title="结束时间" value={task.finished_at || '-'} />
         <InfoCard title="重试次数" value={`${task.retry_count}/${task.max_retries}`} />
@@ -902,8 +980,8 @@ function TaskDetailPage({ id }: { id: number }) {
 
       <div className="grid gap-3 md:grid-cols-3">
         <InfoCard title="最后重试" value={task.last_retry_at || '-'} />
-        <InfoCard title="错误类型" value={task.last_error_type || '-'} />
-        <InfoCard title="错误" value={task.error || '-'} />
+        <InfoCard title="错误类型" value={task.last_error_type ? statusLabel(task.last_error_type) : '-'} />
+        <InfoCard title="错误" value={task.error || '暂无错误'} />
       </div>
 
       <div className="grid gap-3 md:grid-cols-4">
@@ -958,13 +1036,13 @@ function TaskDetailPage({ id }: { id: number }) {
         <Card>
           <CardHeader><h3 className="font-semibold">配置</h3></CardHeader>
           <CardContent>
-            <pre className="overflow-auto rounded-lg border border-slate-700 bg-slate-950 p-4 text-xs leading-6 text-slate-100">{JSON.stringify(task.config || {}, null, 2)}</pre>
+            <pre className="overflow-auto rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-4 text-xs leading-6 text-[hsl(var(--text))]">{JSON.stringify(task.config || {}, null, 2)}</pre>
           </CardContent>
         </Card>
         <Card>
           <CardHeader><h3 className="font-semibold">日志</h3></CardHeader>
           <CardContent>
-            <pre className="max-h-[540px] overflow-auto whitespace-pre-wrap rounded-lg border border-slate-700 bg-slate-950 p-4 text-xs leading-6 text-slate-100">{task.log || '还没有日志'}</pre>
+            <pre className="max-h-[540px] overflow-auto whitespace-pre-wrap rounded-lg border border-[hsl(var(--line))] bg-[#0F172A] p-4 text-xs leading-6 text-slate-100">{task.log || '还没有日志'}</pre>
           </CardContent>
         </Card>
       </div>
@@ -1049,6 +1127,11 @@ function AccountsPage() {
         </Button>
       </ActionBar>
       {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(220,38,38,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
+      <div className="grid gap-3 md:grid-cols-3">
+        <InfoCard title="可用账号" value={String(accounts.filter((account) => account.status === 'active').length)} />
+        <InfoCard title="失效账号" value={String(accounts.filter((account) => account.status !== 'active').length)} />
+        <InfoCard title="最近检测" value={accounts[0]?.last_checked_at || '-'} />
+      </div>
 
       <Card>
         <CardHeader>
@@ -1093,7 +1176,12 @@ function AccountsPage() {
                     <td className="px-4 py-3">#{account.id}</td>
                     <td className="px-4 py-3 font-medium">{account.label}</td>
                     <td className="px-4 py-3">{account.screen_name ? `@${account.screen_name}` : '-'}</td>
-                    <td className="px-4 py-3"><Badge tone={statusTone(account.status)}>{account.status}</Badge></td>
+                    <td className="px-4 py-3">
+                      <div className="space-y-1">
+                        <Badge tone={statusTone(account.status)}>{statusLabel(account.status)}</Badge>
+                        <div className="max-w-[220px] text-xs text-[hsl(var(--muted))]">{statusDescription(account.status) || '账号状态'}</div>
+                      </div>
+                    </td>
                     <td className="px-4 py-3">{account.last_checked_at || '-'}</td>
                     <td className="max-w-[280px] truncate px-4 py-3 text-[hsl(var(--muted))]">{account.last_error || '-'}</td>
                     <td className="px-4 py-3">
@@ -1170,6 +1258,12 @@ function ProxyPage() {
         <h2 className="text-2xl font-semibold">IP / 代理池</h2>
         <p className="mt-1 text-sm text-[hsl(var(--muted))]">保存可用代理，运行时从这里选择生效代理。</p>
       </div>
+      <div className="grid gap-3 md:grid-cols-4">
+        <InfoCard title="可用代理" value={String(proxies.filter((proxy) => proxy.enabled && proxy.status === 'active').length)} />
+        <InfoCard title="停用代理" value={String(proxies.filter((proxy) => !proxy.enabled).length)} />
+        <InfoCard title="失败次数" value={String(proxies.reduce((sum, proxy) => sum + (proxy.failure_count || 0), 0))} />
+        <InfoCard title="最近检测" value={proxies[0]?.last_checked_at || '-'} />
+      </div>
       {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(220,38,38,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
 
       <Card>
@@ -1215,7 +1309,14 @@ function ProxyPage() {
                     <td className="px-4 py-3 font-medium">{proxy.label}</td>
                     <td className="px-4 py-3 break-all">{proxy.proxy}</td>
                     <td className="px-4 py-3">
-                      <Badge tone={proxy.enabled && proxy.status === 'active' ? 'success' : statusTone(proxy.status)}>{proxy.enabled ? proxy.status : 'disabled'}</Badge>
+                      <div className="space-y-1">
+                        <Badge tone={proxy.enabled && proxy.status === 'active' ? 'success' : statusTone(proxy.enabled ? proxy.status : 'disabled')}>
+                          {proxy.enabled ? statusLabel(proxy.status) : '已停用'}
+                        </Badge>
+                        <div className="max-w-[240px] text-xs text-[hsl(var(--muted))]">
+                          {proxy.enabled ? (statusDescription(proxy.status) || '代理状态') : '当前代理不会参与运行。'}
+                        </div>
+                      </div>
                     </td>
                     <td className="px-4 py-3">{proxy.detected_ip || '-'}</td>
                     <td className="px-4 py-3">{proxy.failure_count}</td>
@@ -1352,9 +1453,16 @@ function RunControlPage() {
       )}
 
       {copyStatus && <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2 text-sm text-[hsl(var(--muted))]">{copyStatus}</div>}
+      <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-4 py-3 text-sm">
+        <div className="flex items-center gap-2 font-medium">
+          <Info className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
+          运行状态：{status.status}
+        </div>
+        <div className="mt-1 text-[hsl(var(--muted))]">{status.message}</div>
+      </div>
 
       <div className="grid gap-3 md:grid-cols-4">
-        <InfoCard title="状态" value={status.status} />
+        <InfoCard title="状态" value={displayStatus(status.status)} />
         <InfoCard title="API 次数" value={String(status.summary.api_calls)} />
         <InfoCard title="下载数" value={String(status.summary.downloads)} />
         <InfoCard title="运行时长" value={status.running_for ? `${status.running_for}s` : '-'} />
@@ -1397,9 +1505,9 @@ function RunControlPage() {
         <Card>
           <CardHeader><h3 className="font-semibold">日志</h3></CardHeader>
           <CardContent>
-            <div className="max-h-[640px] overflow-auto rounded-lg border border-slate-700 bg-slate-950 p-4 text-xs leading-6 text-slate-100">
-              {status.logs.length ? status.logs.map((line, index) => <div key={`${index}-${line}`}>{line}</div>) : '还没有日志'}
-            </div>
+              <div className="max-h-[640px] overflow-auto rounded-lg border border-[hsl(var(--line))] bg-[#0F172A] p-4 text-xs leading-6 text-slate-100">
+                {status.logs.length ? status.logs.map((line, index) => <div key={`${index}-${line}`}>{line}</div>) : '还没有日志'}
+              </div>
           </CardContent>
         </Card>
       </div>

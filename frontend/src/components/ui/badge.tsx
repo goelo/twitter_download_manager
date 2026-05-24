@@ -4,7 +4,7 @@ export function Badge({ className, tone = 'neutral', children }: { className?: s
   return (
     <span
       className={cn(
-        'inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold',
+        'inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold tracking-wide',
         tone === 'neutral' && 'bg-[hsl(var(--panel-soft))] text-[hsl(var(--muted))]',
         tone === 'success' && 'bg-[rgba(22,163,74,0.12)] text-[hsl(var(--success))]',
         tone === 'warning' && 'bg-[rgba(245,158,11,0.14)] text-[#B45309]',

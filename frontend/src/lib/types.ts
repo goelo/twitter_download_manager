@@ -145,3 +145,34 @@ export type RunConfig = {
   media_count_limit: number;
   project_path?: string;
 };
+
+export type TaskType = 'user_media' | 'search' | 'text' | 'replies' | 'profile';
+
+export type TaskFormValues = {
+  task_type: TaskType;
+  account_id: number;
+  targets: string;
+  time_range: string;
+  max_concurrent_requests: number;
+  has_retweet: boolean;
+  high_lights: boolean;
+  likes: boolean;
+  has_video: boolean;
+  down_log: boolean;
+  auto_sync: boolean;
+  md_output: boolean;
+  image_format: string;
+  media_count_limit: number;
+  proxy: string;
+  proxy_id: number | null;
+  tag: string;
+  advanced_filter: string;
+  down_count: number;
+  media_latest: boolean;
+  text_down: boolean;
+  media_down: boolean;
+  min_replies: number;
+  min_faves: number;
+  min_retweets: number;
+  search_advanced: string;
+};
