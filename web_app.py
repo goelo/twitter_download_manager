@@ -41,6 +41,18 @@ worker_lock = threading.Lock()
 worker_thread = None
 stop_worker = False
 
+health_lock = threading.Lock()
+health_thread = None
+stop_health_worker = False
+HEALTH_CHECK_INTERVAL = int(os.environ.get('TW_WEB_HEALTH_INTERVAL', '900') or 900)
+health_state = {
+    'running': False,
+    'last_started_at': None,
+    'last_finished_at': None,
+    'last_error': None,
+    'interval_seconds': HEALTH_CHECK_INTERVAL,
+}
+
 run_lock = threading.Lock()
 run_process = None
 run_state = {
@@ -138,6 +150,19 @@ def init_db():
                 'insert into users (username, password_hash, role, created_at) values (?, ?, ?, ?)',
                 (DEFAULT_ADMIN_USER, password_hash(DEFAULT_ADMIN_PASSWORD), 'admin', now()),
             )
+        ensure_column(conn, 'accounts', 'last_error', 'text')
+        ensure_column(conn, 'proxies', 'detected_ip', 'text')
+        ensure_column(conn, 'proxies', 'failure_count', 'integer not null default 0')
+        ensure_column(conn, 'tasks', 'retry_count', 'integer not null default 0')
+        ensure_column(conn, 'tasks', 'max_retries', 'integer not null default 2')
+        ensure_column(conn, 'tasks', 'last_retry_at', 'text')
+        ensure_column(conn, 'tasks', 'last_error_type', 'text')
+
+
+def ensure_column(conn, table, column, definition):
+    existing = {row['name'] for row in conn.execute(f'pragma table_info({table})').fetchall()}
+    if column not in existing:
+        conn.execute(f'alter table {table} add column {column} {definition}')
 
 
 def current_user(request: Request):
@@ -177,6 +202,7 @@ def account_payload(account):
         'screen_name': account['screen_name'],
         'status': account['status'],
         'last_checked_at': account['last_checked_at'],
+        'last_error': account['last_error'] if 'last_error' in account.keys() else None,
         'created_at': account['created_at'],
     }
 
@@ -185,11 +211,13 @@ def proxy_payload(proxy):
     return {
         'id': proxy['id'],
         'label': proxy['label'],
-        'proxy': proxy['proxy'],
+        'proxy': redact_proxy_url(proxy['proxy']),
         'enabled': bool(proxy['enabled']),
         'status': proxy['status'],
         'last_checked_at': proxy['last_checked_at'],
         'last_error': proxy['last_error'],
+        'detected_ip': proxy['detected_ip'] if 'detected_ip' in proxy.keys() else None,
+        'failure_count': proxy['failure_count'] if 'failure_count' in proxy.keys() else 0,
         'created_at': proxy['created_at'],
     }
 
@@ -209,6 +237,10 @@ def task_payload(task, include_config=False, include_log=False, include_files=Fa
         'started_at': task['started_at'],
         'finished_at': task['finished_at'],
         'process_id': task['process_id'],
+        'retry_count': task['retry_count'] if 'retry_count' in task.keys() else 0,
+        'max_retries': task['max_retries'] if 'max_retries' in task.keys() else 2,
+        'last_retry_at': task['last_retry_at'] if 'last_retry_at' in task.keys() else None,
+        'last_error_type': task['last_error_type'] if 'last_error_type' in task.keys() else None,
         'summary': summary,
     }
     if include_config:
@@ -232,7 +264,14 @@ def redact_sensitive(value):
     text = re.sub(r'("auth_token"\s*:\s*")[^"]+', r'\1[已隐藏]', text)
     text = re.sub(r'("ct0"\s*:\s*")[^"]+', r'\1[已隐藏]', text)
     text = re.sub(r'("cookie"\s*:\s*")[^"]+', r'\1[已隐藏]', text)
+    text = re.sub(r'((?:https?|socks5?|socks4)://)([^:@/\s]+):([^@/\s]+)@', r'\1[账号]:[密码]@', text, flags=re.IGNORECASE)
     return text
+
+
+def redact_proxy_url(proxy_url):
+    if not proxy_url:
+        return ''
+    return redact_sensitive(proxy_url)
 
 
 def public_config(config):
@@ -240,6 +279,8 @@ def public_config(config):
     for key in ['cookie', 'auth_token', 'ct0']:
         if key in clean and clean[key]:
             clean[key] = '[已隐藏]'
+    if clean.get('proxy'):
+        clean['proxy'] = redact_proxy_url(clean['proxy'])
     return clean
 
 
@@ -255,7 +296,7 @@ def task_files(task):
     files = []
     if output_dir.exists():
         for path in sorted(output_dir.rglob('*')):
-            if path.is_file() and path.name not in {'account_session.json'} and not path.name.startswith('task-'):
+            if path.is_file() and path.name not in {'account_session.json', 'task_config.json'} and not path.name.startswith('task-'):
                 files.append({'name': str(path.relative_to(output_dir)), 'size': path.stat().st_size})
     return files
 
@@ -468,7 +509,7 @@ def active_accounts():
 
 def active_proxies():
     with db() as conn:
-        return conn.execute("select * from proxies where enabled = 1 order by id desc").fetchall()
+        return conn.execute("select * from proxies where enabled = 1 and status = 'active' order by id desc").fetchall()
 
 
 def validate_proxy(proxy_url):
@@ -480,6 +521,58 @@ def validate_proxy(proxy_url):
         return False, '', f'HTTP {r.status_code}: {r.text[:200]}'
     except Exception as exc:
         return False, '', str(exc)
+
+
+def update_account_health(account_id, ok, screen_name=None, error=''):
+    with db() as conn:
+        conn.execute(
+            'update accounts set status = ?, screen_name = coalesce(?, screen_name), last_checked_at = ?, last_error = ? where id = ?',
+            ('active' if ok else 'expired', screen_name, now(), None if ok else redact_sensitive(error), account_id),
+        )
+        return conn.execute('select * from accounts where id = ?', (account_id,)).fetchone()
+
+
+def update_proxy_health(proxy_id, ok, ip='', error=''):
+    with db() as conn:
+        if ok:
+            conn.execute(
+                "update proxies set status = 'active', enabled = 1, detected_ip = ?, failure_count = 0, last_checked_at = ?, last_error = null where id = ?",
+                (ip or None, now(), proxy_id),
+            )
+        else:
+            conn.execute(
+                "update proxies set status = 'expired', enabled = 0, detected_ip = null, failure_count = coalesce(failure_count, 0) + 1, last_checked_at = ?, last_error = ? where id = ?",
+                (now(), redact_sensitive(error), proxy_id),
+            )
+        return conn.execute('select * from proxies where id = ?', (proxy_id,)).fetchone()
+
+
+def check_account_row(account):
+    ok, screen_name, error = validate_account_cookie(account['cookie'])
+    refreshed = update_account_health(account['id'], ok, screen_name, error)
+    return refreshed, ok, error
+
+
+def check_proxy_row(proxy):
+    ok, ip, error = validate_proxy(proxy['proxy'])
+    refreshed = update_proxy_health(proxy['id'], ok, ip, error)
+    return refreshed, ok, ip, error
+
+
+def get_active_account_or_error(account_id):
+    with db() as conn:
+        account = conn.execute("select * from accounts where id = ? and status = 'active'", (account_id,)).fetchone()
+    if not account:
+        raise HTTPException(status_code=400, detail='X 账号不可用，请先到账号页重新检测或登录。')
+    return account
+
+
+def get_active_proxy_or_error(proxy_id):
+    with db() as conn:
+        proxy = conn.execute("select * from proxies where id = ? and enabled = 1 and status = 'active'", (proxy_id,)).fetchone()
+    if not proxy:
+        raise HTTPException(status_code=400, detail='所选代理不可用，请先到代理页检测或换一个代理。')
+    return proxy
 
 
 def build_runtime_settings(config: dict):
@@ -644,6 +737,63 @@ def start_background_worker():
         worker_thread.start()
 
 
+def start_health_worker():
+    global health_thread
+    with health_lock:
+        if health_thread and health_thread.is_alive():
+            return
+        health_thread = threading.Thread(target=health_loop, daemon=True)
+        health_thread.start()
+
+
+def health_loop():
+    while not stop_health_worker:
+        run_health_check_once()
+        slept = 0
+        while slept < HEALTH_CHECK_INTERVAL and not stop_health_worker:
+            time.sleep(1)
+            slept += 1
+
+
+def run_health_check_once():
+    with health_lock:
+        if health_state['running']:
+            return
+        health_state['running'] = True
+        health_state['last_started_at'] = now()
+        health_state['last_error'] = None
+    try:
+        with db() as conn:
+            accounts = conn.execute("select * from accounts where status = 'active' order by id desc").fetchall()
+            proxies = conn.execute("select * from proxies where enabled = 1 order by id desc").fetchall()
+        for account in accounts:
+            check_account_row(account)
+        for proxy in proxies:
+            check_proxy_row(proxy)
+    except Exception as exc:
+        with health_lock:
+            health_state['last_error'] = redact_sensitive(str(exc))
+    finally:
+        with health_lock:
+            health_state['running'] = False
+            health_state['last_finished_at'] = now()
+
+
+def health_status_payload():
+    with db() as conn:
+        accounts = conn.execute('select status, count(*) as count from accounts group by status').fetchall()
+        proxies = conn.execute(
+            "select case when enabled = 0 then 'disabled' else status end as status, count(*) as count from proxies group by case when enabled = 0 then 'disabled' else status end"
+        ).fetchall()
+    with health_lock:
+        state = dict(health_state)
+    return {
+        **state,
+        'accounts': {row['status']: row['count'] for row in accounts},
+        'proxies': {row['status']: row['count'] for row in proxies},
+    }
+
+
 def classify_failure(log_text, return_code):
     lower = log_text.lower()
     if 'rate limit exceeded' in lower or 'api次数已超限' in log_text:
@@ -657,6 +807,10 @@ def classify_failure(log_text, return_code):
     if 'keyerror' in lower or 'list index out of range' in lower or 'graphql' in lower or '接口' in log_text:
         return 'api_changed', 'X 接口结构可能已变化'
     return 'failed', f'任务失败, 退出码 {return_code}'
+
+
+def should_retry_task(error_type):
+    return error_type in {'network_failed', 'rate_limited'}
 
 
 def worker_loop():
@@ -677,12 +831,12 @@ def run_task(task):
     account_path = output_dir / 'account_session.json'
 
     with db() as conn:
-        account = conn.execute('select * from accounts where id = ?', (task['account_id'],)).fetchone()
+        account = conn.execute("select * from accounts where id = ? and status = 'active'", (task['account_id'],)).fetchone()
     if not account:
         with db() as conn:
             conn.execute(
-                "update tasks set status = 'auth_expired', error = ?, finished_at = ? where id = ?",
-                ('未找到可用 X 账号', now(), task['id']),
+                "update tasks set status = 'auth_expired', error = ?, last_error_type = ?, finished_at = ?, process_id = null where id = ?",
+                ('未找到可用 X 账号', 'auth_expired', now(), task['id']),
             )
         return
 
@@ -731,16 +885,31 @@ def run_task(task):
     log_text = read_log(log_path, 50000)
     if return_code == 0:
         status, error = 'completed', None
+        error_type = None
     else:
         status, error = classify_failure(log_text, return_code)
+        error_type = status
         summary = task_summary(task)
-        if summary['records'] or summary['files']:
+        has_partial_result = bool(summary['records'] or summary['files'])
+        if has_partial_result:
             status = 'partial_failed'
             error = f'{error}；已保留部分采集结果'
+    retry_count = int(task.get('retry_count') or 0)
+    max_retries = int(task.get('max_retries') or 2)
+    if return_code != 0 and not has_partial_result and should_retry_task(error_type) and retry_count < max_retries:
+        next_retry_count = retry_count + 1
+        with open(log_path, 'a', encoding='utf-8', errors='replace') as log_file:
+            log_file.write(f'\n[{now()}] {error}，准备第 {next_retry_count}/{max_retries} 次自动重试。\n')
+        with db() as conn:
+            conn.execute(
+                "update tasks set status = 'queued', error = ?, retry_count = ?, last_retry_at = ?, last_error_type = ?, process_id = null where id = ?",
+                (error, next_retry_count, now(), error_type, task['id']),
+            )
+        return
     with db() as conn:
         conn.execute(
-            'update tasks set status = ?, error = ?, finished_at = ?, process_id = null where id = ?',
-            (status, error, now(), task['id']),
+            'update tasks set status = ?, error = ?, last_error_type = ?, finished_at = ?, process_id = null where id = ?',
+            (status, error, error_type, now(), task['id']),
         )
         refreshed = conn.execute('select tasks.*, users.username from tasks join users on users.id = tasks.user_id where tasks.id = ?', (task['id'],)).fetchone()
     if refreshed:
@@ -751,6 +920,7 @@ def run_task(task):
 def on_startup():
     init_db()
     start_background_worker()
+    start_health_worker()
 
 
 @app.get('/', response_class=HTMLResponse)
@@ -840,10 +1010,7 @@ def apply_proxy_selection(config, proxy_id):
     selected_proxy_id = int(proxy_id or 0)
     if not selected_proxy_id:
         return config
-    with db() as conn:
-        proxy = conn.execute('select * from proxies where id = ? and enabled = 1', (selected_proxy_id,)).fetchone()
-    if not proxy:
-        raise HTTPException(status_code=400, detail='所选代理不可用')
+    proxy = get_active_proxy_or_error(selected_proxy_id)
     config['proxy'] = proxy['proxy']
     config['proxy_id'] = selected_proxy_id
     return config
@@ -969,6 +1136,7 @@ async def create_task(request: Request, user=Depends(require_user)):
         return templates.TemplateResponse('task_form.html', {'request': request, 'user': user, 'accounts': accounts, 'error': '请先选择 X 账号'}, status_code=400)
     config = build_task_config(form)
     try:
+        get_active_account_or_error(account_id)
         apply_proxy_selection(config, form.get('proxy_id'))
         validate_task_config(config)
     except HTTPException as exc:
@@ -1028,7 +1196,7 @@ def cancel_task(task_id: int, user=Depends(require_user)):
     task = get_task_or_404(task_id, user)
     if task['status'] == 'queued':
         with db() as conn:
-            conn.execute("update tasks set status = 'cancelled', finished_at = ?, error = ? where id = ?", (now(), '用户取消', task_id))
+            conn.execute("update tasks set status = 'cancelled', finished_at = ?, error = ?, last_error_type = ? where id = ?", (now(), '用户取消', 'cancelled', task_id))
     elif task['status'] == 'running' and task['process_id']:
         try:
             if os.name == 'nt':
@@ -1038,7 +1206,7 @@ def cancel_task(task_id: int, user=Depends(require_user)):
         except Exception:
             pass
         with db() as conn:
-            conn.execute("update tasks set status = 'cancelled', finished_at = ?, process_id = null, error = ? where id = ?", (now(), '用户取消', task_id))
+            conn.execute("update tasks set status = 'cancelled', finished_at = ?, process_id = null, error = ?, last_error_type = ? where id = ?", (now(), '用户取消', 'cancelled', task_id))
     return RedirectResponse(f'/tasks/{task_id}', status_code=303)
 
 
@@ -1049,9 +1217,10 @@ def download_task(task_id: int, user=Depends(require_user)):
     if not output_dir.exists():
         raise HTTPException(status_code=404, detail='Output not found')
     zip_path = output_dir / f'task-{task_id}.zip'
+    excluded = {'account_session.json', 'task_config.json'}
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for path in output_dir.rglob('*'):
-            if path.is_file() and path.name != zip_path.name and path.name != 'account_session.json':
+            if path.is_file() and path.name != zip_path.name and path.name not in excluded:
                 zf.write(path, path.relative_to(output_dir))
     return FileResponse(zip_path, filename=zip_path.name)
 
@@ -1084,12 +1253,7 @@ def check_account(account_id: int, user=Depends(require_admin)):
         account = conn.execute('select * from accounts where id = ?', (account_id,)).fetchone()
     if not account:
         raise HTTPException(status_code=404, detail='Account not found')
-    ok, screen_name, error = validate_account_cookie(account['cookie'])
-    with db() as conn:
-        conn.execute(
-            'update accounts set status = ?, screen_name = coalesce(?, screen_name), last_checked_at = ? where id = ?',
-            ('active' if ok else 'expired', screen_name, now(), account_id),
-        )
+    check_account_row(account)
     return RedirectResponse('/accounts', status_code=303)
 
 
@@ -1139,6 +1303,11 @@ def health():
     return {'ok': True, 'time': now()}
 
 
+@app.get('/api/health/status')
+def api_health_status(user=Depends(require_api_admin)):
+    return health_status_payload()
+
+
 @app.get('/api/dashboard')
 def api_dashboard(user=Depends(require_api_user)):
     return dashboard_payload(user)
@@ -1155,7 +1324,7 @@ def api_run_config():
     proxy_id = settings.get('proxy_id')
     if proxy_id:
         with db() as conn:
-            selected_proxy = conn.execute('select * from proxies where id = ? and enabled = 1', (proxy_id,)).fetchone()
+            selected_proxy = conn.execute("select * from proxies where id = ? and enabled = 1 and status = 'active'", (proxy_id,)).fetchone()
         if selected_proxy:
             settings['proxy'] = selected_proxy['proxy']
     return {
@@ -1172,7 +1341,7 @@ def api_run_config():
         'has_video': bool(settings.get('has_video', True)),
         'log_output': True,
         'max_concurrent_requests': int(settings.get('max_concurrent_requests', 8) or 8),
-        'proxy': settings.get('proxy', ''),
+        'proxy': redact_proxy_url(settings.get('proxy', '')),
         'proxies': proxies,
         'proxy_id': settings.get('proxy_id'),
         'md_output': bool(settings.get('md_output', False)),
@@ -1200,10 +1369,7 @@ async def api_run_start(request: Request):
         raise HTTPException(status_code=400, detail='至少填写一个用户名。')
     proxy_id = int(data.get('proxy_id') or 0)
     if proxy_id:
-        with db() as conn:
-            proxy = conn.execute('select * from proxies where id = ? and enabled = 1', (proxy_id,)).fetchone()
-        if not proxy:
-            raise HTTPException(status_code=400, detail='所选代理不可用')
+        proxy = get_active_proxy_or_error(proxy_id)
         data['proxy'] = proxy['proxy']
     return start_main_process(data)
 
@@ -1261,10 +1427,7 @@ async def api_create_task(request: Request, user=Depends(require_api_user)):
     account_id = int(data.get('account_id') or 0)
     if not account_id:
         raise HTTPException(status_code=400, detail='请先选择 X 账号')
-    with db() as conn:
-        account = conn.execute("select id from accounts where id = ? and status = 'active'", (account_id,)).fetchone()
-    if not account:
-        raise HTTPException(status_code=400, detail='X 账号不可用')
+    get_active_account_or_error(account_id)
     config = {
         'task_type': data.get('task_type'),
         'targets': data.get('targets') or '',
@@ -1333,7 +1496,7 @@ def api_cancel_task(task_id: int, user=Depends(require_api_user)):
     task = get_task_or_404(task_id, user)
     if task['status'] == 'queued':
         with db() as conn:
-            conn.execute("update tasks set status = 'cancelled', finished_at = ?, error = ? where id = ?", (now(), '用户取消', task_id))
+            conn.execute("update tasks set status = 'cancelled', finished_at = ?, error = ?, last_error_type = ? where id = ?", (now(), '用户取消', 'cancelled', task_id))
     elif task['status'] == 'running' and task['process_id']:
         try:
             if os.name == 'nt':
@@ -1343,7 +1506,7 @@ def api_cancel_task(task_id: int, user=Depends(require_api_user)):
         except Exception:
             pass
         with db() as conn:
-            conn.execute("update tasks set status = 'cancelled', finished_at = ?, process_id = null, error = ? where id = ?", (now(), '用户取消', task_id))
+            conn.execute("update tasks set status = 'cancelled', finished_at = ?, process_id = null, error = ?, last_error_type = ? where id = ?", (now(), '用户取消', 'cancelled', task_id))
     with db() as conn:
         refreshed = conn.execute('select tasks.*, users.username from tasks join users on users.id = tasks.user_id where tasks.id = ?', (task_id,)).fetchone()
     return {'task': task_payload(refreshed, include_config=True, include_log=True, include_files=True)}
@@ -1387,13 +1550,7 @@ def api_check_proxy(proxy_id: int, user=Depends(require_api_admin)):
         proxy = conn.execute('select * from proxies where id = ?', (proxy_id,)).fetchone()
     if not proxy:
         raise HTTPException(status_code=404, detail='Proxy not found')
-    ok, ip, error = validate_proxy(proxy['proxy'])
-    with db() as conn:
-        conn.execute(
-            'update proxies set status = ?, last_checked_at = ?, last_error = ? where id = ?',
-            ('active' if ok else 'expired', now(), error or None, proxy_id),
-        )
-        refreshed = conn.execute('select * from proxies where id = ?', (proxy_id,)).fetchone()
+    refreshed, ok, ip, error = check_proxy_row(proxy)
     payload = proxy_payload(refreshed)
     payload['detected_ip'] = ip
     return {'proxy': payload, 'ok': ok, 'error': error, 'ip': ip}
@@ -1442,13 +1599,7 @@ def api_check_account(account_id: int, user=Depends(require_api_admin)):
         account = conn.execute('select * from accounts where id = ?', (account_id,)).fetchone()
     if not account:
         raise HTTPException(status_code=404, detail='Account not found')
-    ok, screen_name, error = validate_account_cookie(account['cookie'])
-    with db() as conn:
-        conn.execute(
-            'update accounts set status = ?, screen_name = coalesce(?, screen_name), last_checked_at = ? where id = ?',
-            ('active' if ok else 'expired', screen_name, now(), account_id),
-        )
-        refreshed = conn.execute('select * from accounts where id = ?', (account_id,)).fetchone()
+    refreshed, ok, error = check_account_row(account)
     return {'account': account_payload(refreshed), 'ok': ok, 'error': error}
 
 

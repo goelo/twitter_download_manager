@@ -10,6 +10,7 @@ export type Account = {
   screen_name: string | null;
   status: string;
   last_checked_at: string | null;
+  last_error: string | null;
   created_at: string;
 };
 
@@ -21,6 +22,8 @@ export type ProxyItem = {
   status: string;
   last_checked_at: string | null;
   last_error: string | null;
+  detected_ip: string | null;
+  failure_count: number;
   created_at: string;
 };
 
@@ -37,6 +40,10 @@ export type Task = {
   started_at: string | null;
   finished_at: string | null;
   process_id: number | null;
+  retry_count: number;
+  max_retries: number;
+  last_retry_at: string | null;
+  last_error_type: string | null;
   config?: Record<string, unknown>;
   log?: string;
   files?: Array<{ name: string; size: number }>;

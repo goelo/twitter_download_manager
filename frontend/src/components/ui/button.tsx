@@ -16,7 +16,7 @@ export function Button({ className, variant = 'default', size = 'md', ...props }
         size === 'lg' && 'h-11 text-base',
         variant === 'default' && 'border-transparent bg-[hsl(var(--primary-dark))] text-white hover:bg-[hsl(var(--primary))]',
         variant === 'secondary' && 'border-[hsl(var(--line))] bg-[hsl(var(--panel))] text-[hsl(var(--text))] hover:bg-[hsl(var(--panel-soft))]',
-        variant === 'danger' && 'border-transparent bg-[hsl(var(--danger))] text-white hover:bg-[#991b1b]',
+        variant === 'danger' && 'border-transparent bg-[hsl(var(--danger))] text-white hover:bg-[#B91C1C]',
         variant === 'ghost' && 'border-transparent bg-transparent text-[hsl(var(--text))] hover:bg-[hsl(var(--panel-soft))]',
         className,
       )}

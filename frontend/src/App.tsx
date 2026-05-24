@@ -16,7 +16,7 @@ type BadgeTone = 'neutral' | 'success' | 'warning' | 'danger' | 'primary';
 function statusTone(status: string): BadgeTone {
   if (status === 'completed' || status === 'active') return 'success';
   if (status === 'running') return 'primary';
-  if (status === 'queued' || status === 'rate_limited') return 'warning';
+  if (status === 'queued' || status === 'rate_limited' || status === 'partial_failed' || status === 'network_failed') return 'warning';
   if (status === 'failed' || status === 'cancelled' || status === 'expired' || status === 'auth_expired') return 'danger';
   return 'neutral';
 }
@@ -24,16 +24,13 @@ function statusTone(status: string): BadgeTone {
 function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-[hsl(var(--bg))] text-[hsl(var(--text))]">
-      <header className="sticky top-0 z-20 border-b border-[hsl(var(--line))] bg-[rgba(247,250,250,0.94)] backdrop-blur">
+      <header className="sticky top-0 z-20 border-b border-[hsl(var(--line))] bg-[rgba(248,250,252,0.94)] backdrop-blur">
         <div className="mx-auto flex min-h-16 max-w-[1440px] flex-wrap items-center gap-3 px-4 py-3">
           <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] text-[hsl(var(--primary-dark))]">
+            <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-[rgba(37,99,235,0.08)] text-[hsl(var(--primary-dark))]">
               <SquareTerminal className="h-5 w-5" />
             </div>
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-wide text-[hsl(var(--primary-dark))]">Local Learning Tool</div>
-              <div className="text-lg font-semibold leading-tight">Twitter/X 下载学习面板</div>
-            </div>
+            <div className="text-lg font-semibold leading-tight">X 舆情采集工作台</div>
           </div>
           <nav className="flex flex-wrap items-center gap-2 md:ml-4">
             <NavItem to="/" icon={<BarChart3 className="h-4 w-4" />} label="汇报看板" />
@@ -57,7 +54,7 @@ function NavItem({ to, icon, label }: { to: string; icon: React.ReactNode; label
       className={({ isActive }) =>
         cn(
           'inline-flex min-h-10 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-[hsl(var(--muted))] transition hover:bg-[hsl(var(--panel-soft))] hover:text-[hsl(var(--text))]',
-          isActive && 'bg-[rgba(13,148,136,0.08)] text-[hsl(var(--primary-dark))]',
+          isActive && 'bg-[rgba(37,99,235,0.10)] text-[hsl(var(--primary-dark))]',
         )
       }
     >
@@ -79,7 +76,7 @@ function BeginnerPanel({
   children?: React.ReactNode;
 }) {
   return (
-    <section className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-4 shadow-[0_18px_45px_rgba(19,78,74,0.10)]">
+    <section className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-4 shadow-[0_10px_30px_rgba(15,23,42,0.06)]">
       <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-center">
         <div className="space-y-3">
           <div>
@@ -346,7 +343,8 @@ function maskSensitive(text: string) {
     .replace(/(ct0=)[^;\s"]+/gi, '$1[已隐藏]')
     .replace(/("cookie"\s*:\s*")[^"]+/gi, '$1[已隐藏]')
     .replace(/("auth_token"\s*:\s*")[^"]+/gi, '$1[已隐藏]')
-    .replace(/("ct0"\s*:\s*")[^"]+/gi, '$1[已隐藏]');
+    .replace(/("ct0"\s*:\s*")[^"]+/gi, '$1[已隐藏]')
+    .replace(/((?:https?|socks5?|socks4):\/\/)([^:@/\s]+):([^@/\s]+)@/gi, '$1[账号]:[密码]@');
 }
 
 async function copyText(text: string) {
@@ -376,8 +374,8 @@ function validateRunForm(form: RunConfig, proxies: ProxyItem[]) {
     const proxy = proxies.find((item) => item.id === form.proxy_id);
     if (!proxy) {
       errors.push('所选代理不存在，请重新选择代理。');
-    } else if (!proxy.enabled) {
-      errors.push('所选代理已停用，请启用代理或改用手填代理。');
+    } else if (!proxy.enabled || proxy.status !== 'active') {
+      errors.push('所选代理不可用，请到代理页检测通过后再使用。');
     }
   }
   return errors;
@@ -405,6 +403,9 @@ function taskCopyText(task: Task) {
     `任务: #${task.id} ${task.title}`,
     `类型: ${task.task_type}`,
     `状态: ${task.status}`,
+    `重试: ${task.retry_count}/${task.max_retries}`,
+    `最后重试: ${task.last_retry_at || '-'}`,
+    `错误类型: ${task.last_error_type || '-'}`,
     `错误: ${task.error || '-'}`,
     `创建时间: ${task.created_at}`,
     `开始时间: ${task.started_at || '-'}`,
@@ -453,6 +454,7 @@ function TaskFormPage() {
   const [searchParams] = useSearchParams();
   const accounts = accountData?.accounts;
   const proxies = proxiesData?.proxies || [];
+  const usableProxies = proxies.filter((proxy) => proxy.enabled && proxy.status === 'active');
   const [form, setForm] = useState({
     task_type: 'user_media',
     account_id: 0,
@@ -521,7 +523,7 @@ function TaskFormPage() {
           取消
         </Button>
       </BeginnerPanel>
-      {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(180,35,24,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
+      {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(220,38,38,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
 
       <div className="grid gap-4 xl:grid-cols-2">
         <Card>
@@ -584,9 +586,9 @@ function TaskFormPage() {
                 onChange={(e) => setForm((prev) => ({ ...prev, proxy_id: e.target.value ? Number(e.target.value) : null }))}
               >
                 <option value="">使用手填代理</option>
-                {proxies.map((proxy) => (
+                {usableProxies.map((proxy) => (
                   <option key={proxy.id} value={proxy.id}>
-                    {proxy.label} {proxy.enabled ? '' : '(停用)'}
+                    {proxy.label}
                   </option>
                 ))}
               </select>
@@ -705,6 +707,12 @@ function TaskDetailPage({ id }: { id: number }) {
         <InfoCard title="状态" value={task.status} />
         <InfoCard title="开始时间" value={task.started_at || '-'} />
         <InfoCard title="结束时间" value={task.finished_at || '-'} />
+        <InfoCard title="重试次数" value={`${task.retry_count}/${task.max_retries}`} />
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-3">
+        <InfoCard title="最后重试" value={task.last_retry_at || '-'} />
+        <InfoCard title="错误类型" value={task.last_error_type || '-'} />
         <InfoCard title="错误" value={task.error || '-'} />
       </div>
 
@@ -760,13 +768,13 @@ function TaskDetailPage({ id }: { id: number }) {
         <Card>
           <CardHeader><h3 className="font-semibold">配置</h3></CardHeader>
           <CardContent>
-            <pre className="overflow-auto rounded-lg border border-[hsl(var(--primary-dark))] bg-[#123b37] p-4 text-xs leading-6 text-[#e6fffb]">{JSON.stringify(task.config || {}, null, 2)}</pre>
+            <pre className="overflow-auto rounded-lg border border-slate-700 bg-slate-950 p-4 text-xs leading-6 text-slate-100">{JSON.stringify(task.config || {}, null, 2)}</pre>
           </CardContent>
         </Card>
         <Card>
           <CardHeader><h3 className="font-semibold">日志</h3></CardHeader>
           <CardContent>
-            <pre className="max-h-[540px] overflow-auto whitespace-pre-wrap rounded-lg border border-[hsl(var(--primary-dark))] bg-[#082f2c] p-4 text-xs leading-6 text-[#e6fffb]">{task.log || '还没有日志'}</pre>
+            <pre className="max-h-[540px] overflow-auto whitespace-pre-wrap rounded-lg border border-slate-700 bg-slate-950 p-4 text-xs leading-6 text-slate-100">{task.log || '还没有日志'}</pre>
           </CardContent>
         </Card>
       </div>
@@ -854,7 +862,7 @@ function AccountsPage() {
           浏览器登录
         </Button>
       </BeginnerPanel>
-      {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(180,35,24,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
+      {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(220,38,38,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
 
       <Card>
         <CardHeader>
@@ -881,7 +889,7 @@ function AccountsPage() {
       <Card>
         <CardContent className="p-0">
           <div className="overflow-auto">
-            <table className="w-full min-w-[1000px] border-collapse text-sm">
+            <table className="w-full min-w-[1120px] border-collapse text-sm">
               <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
                 <tr>
                   <th className="px-4 py-3">ID</th>
@@ -889,17 +897,19 @@ function AccountsPage() {
                   <th className="px-4 py-3">用户名</th>
                   <th className="px-4 py-3">状态</th>
                   <th className="px-4 py-3">检测时间</th>
+                  <th className="px-4 py-3">失败原因</th>
                   <th className="px-4 py-3"></th>
                 </tr>
               </thead>
               <tbody>
                 {accounts.map((account) => (
-                  <tr key={account.id} className="border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]">
+                  <tr key={account.id} className={cn('border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]', account.status !== 'active' && 'bg-[rgba(180,35,24,0.04)] text-[hsl(var(--muted))]')}>
                     <td className="px-4 py-3">#{account.id}</td>
                     <td className="px-4 py-3 font-medium">{account.label}</td>
                     <td className="px-4 py-3">{account.screen_name ? `@${account.screen_name}` : '-'}</td>
                     <td className="px-4 py-3"><Badge tone={statusTone(account.status)}>{account.status}</Badge></td>
                     <td className="px-4 py-3">{account.last_checked_at || '-'}</td>
+                    <td className="max-w-[280px] truncate px-4 py-3 text-[hsl(var(--muted))]">{account.last_error || '-'}</td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-2">
                         <Button variant="secondary" size="sm" onClick={() => checkAccount.mutate(account.id)} disabled={checkAccount.isPending}>
@@ -913,7 +923,7 @@ function AccountsPage() {
                   </tr>
                 ))}
                 {!accounts.length && (
-                  <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={6}>还没有账号</td></tr>
+                  <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={7}>还没有账号</td></tr>
                 )}
               </tbody>
             </table>
@@ -984,7 +994,7 @@ function ProxyPage() {
           保存代理
         </Button>
       </BeginnerPanel>
-      {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(180,35,24,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
+      {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(220,38,38,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
 
       <Card>
         <CardHeader>
@@ -1008,13 +1018,15 @@ function ProxyPage() {
       <Card>
         <CardContent className="p-0">
           <div className="overflow-auto">
-            <table className="w-full min-w-[1100px] border-collapse text-sm">
+            <table className="w-full min-w-[1280px] border-collapse text-sm">
               <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
                 <tr>
                   <th className="px-4 py-3">ID</th>
                   <th className="px-4 py-3">名称</th>
                   <th className="px-4 py-3">代理</th>
                   <th className="px-4 py-3">状态</th>
+                  <th className="px-4 py-3">出口 IP</th>
+                  <th className="px-4 py-3">失败次数</th>
                   <th className="px-4 py-3">检测时间</th>
                   <th className="px-4 py-3">错误</th>
                   <th className="px-4 py-3"></th>
@@ -1022,13 +1034,15 @@ function ProxyPage() {
               </thead>
               <tbody>
                 {proxies.map((proxy) => (
-                  <tr key={proxy.id} className="border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]">
+                  <tr key={proxy.id} className={cn('border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]', (!proxy.enabled || proxy.status !== 'active') && 'bg-[rgba(15,23,42,0.04)] text-[hsl(var(--muted))]')}>
                     <td className="px-4 py-3">#{proxy.id}</td>
                     <td className="px-4 py-3 font-medium">{proxy.label}</td>
                     <td className="px-4 py-3 break-all">{proxy.proxy}</td>
                     <td className="px-4 py-3">
-                      <Badge tone={proxy.enabled ? 'success' : 'neutral'}>{proxy.enabled ? proxy.status : 'disabled'}</Badge>
+                      <Badge tone={proxy.enabled && proxy.status === 'active' ? 'success' : statusTone(proxy.status)}>{proxy.enabled ? proxy.status : 'disabled'}</Badge>
                     </td>
+                    <td className="px-4 py-3">{proxy.detected_ip || '-'}</td>
+                    <td className="px-4 py-3">{proxy.failure_count}</td>
                     <td className="px-4 py-3">{proxy.last_checked_at || '-'}</td>
                     <td className="px-4 py-3 max-w-[280px] truncate text-[hsl(var(--muted))]">{proxy.last_error || '-'}</td>
                     <td className="px-4 py-3">
@@ -1047,7 +1061,7 @@ function ProxyPage() {
                   </tr>
                 ))}
                 {!proxies.length && (
-                  <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={7}>还没有代理</td></tr>
+                  <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={9}>还没有代理</td></tr>
                 )}
               </tbody>
             </table>
@@ -1064,6 +1078,7 @@ function RunControlPage() {
   const { data: statusData } = useQuery({ queryKey: ['run-status'], queryFn: () => api.runStatus(), refetchInterval: 2000 });
   const { data: proxiesData } = useQuery({ queryKey: ['proxies'], queryFn: () => api.proxies(), refetchInterval: 8000 });
   const proxies = proxiesData?.proxies || [];
+  const usableProxies = proxies.filter((proxy) => proxy.enabled && proxy.status === 'active');
   const [preflightErrors, setPreflightErrors] = useState<string[]>([]);
   const [copyStatus, setCopyStatus] = useState('');
   const [form, setForm] = useState({
@@ -1150,7 +1165,7 @@ function RunControlPage() {
       </BeginnerPanel>
 
       {preflightErrors.length > 0 && (
-        <div className="rounded-lg border border-[hsl(var(--warning))] bg-[rgba(217,119,6,0.10)] px-4 py-3 text-sm text-[hsl(var(--text))]">
+        <div className="rounded-lg border border-[hsl(var(--warning))] bg-[rgba(245,158,11,0.12)] px-4 py-3 text-sm text-[hsl(var(--text))]">
           <div className="font-semibold">启动前请先处理：</div>
           <ul className="mt-2 list-disc space-y-1 pl-5">
             {preflightErrors.map((error) => <li key={error}>{error}</li>)}
@@ -1159,7 +1174,7 @@ function RunControlPage() {
       )}
 
       {(start.error || stop.error) && (
-        <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(180,35,24,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">
+        <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(220,38,38,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">
           操作没有成功：{(start.error as Error | null)?.message || (stop.error as Error | null)?.message}
         </div>
       )}
@@ -1187,9 +1202,9 @@ function RunControlPage() {
                 onChange={(e) => setForm((prev) => ({ ...prev, proxy_id: e.target.value ? Number(e.target.value) : null }))}
               >
                 <option value="">使用手填代理</option>
-                {proxies.map((proxy) => (
+                {usableProxies.map((proxy) => (
                   <option key={proxy.id} value={proxy.id}>
-                    {proxy.label} {proxy.enabled ? '' : '(停用)'}
+                    {proxy.label}
                   </option>
                 ))}
               </select>
@@ -1210,7 +1225,7 @@ function RunControlPage() {
         <Card>
           <CardHeader><h3 className="font-semibold">日志</h3></CardHeader>
           <CardContent>
-            <div className="max-h-[640px] overflow-auto rounded-lg border border-[hsl(var(--primary-dark))] bg-[#082f2c] p-4 text-xs leading-6 text-[#e6fffb]">
+            <div className="max-h-[640px] overflow-auto rounded-lg border border-slate-700 bg-slate-950 p-4 text-xs leading-6 text-slate-100">
               {status.logs.length ? status.logs.map((line, index) => <div key={`${index}-${line}`}>{line}</div>) : '还没有日志'}
             </div>
           </CardContent>
