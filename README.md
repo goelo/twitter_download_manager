@@ -1,213 +1,173 @@
-# twitter_download_manager
+# 我的 Twitter/X 下载管理器
 
-# 推特图片下载   &nbsp; (๑¯◡¯๑) 
-推特 图片 & 视频 & 文本 下载，以用户名为参数，爬取该用户推文中的图片与视频(含gif)
+这是我整理维护的 Twitter/X 本地下载管理器版本。项目保留脚本下载能力，同时补充了本地 Web 面板，方便在浏览器里配置任务、查看日志和管理下载结果。
 
-支持排除转推内容 & 多用户爬取 & 时间范围限制 & 按Tag获取 & 纯文本获取 & 高级搜索 & 评论区下载
+本项目仅用于学习、研究和个人资料备份。请使用自己的账号信息，遵守所在地区法律法规、目标平台规则和内容版权要求。
 
---- 
-## Disclaimer / 免责声明
+## 功能概览
 
-> **EN**
-> 
-> 1. This project is strictly for programming learning, academic research, and personal practice.
-> 
-> 2. The intellectual property of all media content (images, videos, etc.) downloaded using this tool belongs to the original authors and the respective platforms. Please respect relevant copyrights.
-> 
-> 3. Users must comply with local laws and regulations, as well as the target platform's Terms of Service (ToS). It is strictly prohibited to use this tool and the obtained data for commercial profit, malicious scraping, or illegal distribution.
-> 
-> 4. The developer assumes no responsibility for any violations, legal disputes, or direct/indirect losses caused by the improper use of this tool. Use at your own risk.
-> 
+- 按用户名下载推文图片、视频和 GIF。
+- 支持多用户、时间范围、是否包含转推、亮点、喜欢内容等选项。
+- 支持 Tag / 高级搜索下载，可配合 X 高级搜索语法使用。
+- 支持指定用户纯文本推文获取。
+- 支持评论区内容下载。
+- 支持用户主页资料获取，包括头像、banner 和简介。
+- 支持去重记录、自动同步、Markdown 记录和 CSV 统计。
+- 提供本地浏览器面板，用表单启动任务并查看实时日志。
 
-<br>
+## 环境要求
 
-> **ZH**
-> 
-> 1. 本项目仅供编程学习交流、学术研究及个人练习使用。
-> 
-> 2. 使用本工具下载的所有媒体内容（图片、视频等）的知识产权均归原作者及所属平台所有，请尊重相关版权。
-> 
-> 3. 使用者须遵守当地法律法规及目标平台的服务条款（ToS）。严禁将本工具及所获取的数据用于商业盈利、恶意抓取或非法传播用途。
-> 
-> 4. 开发者不对任何因不当使用本工具而导致的违规行为、法律纠纷或直接/间接损失承担责任。请风险自担。
-> 
----
-**目前老马加了API的请求次数限制** 
-``` 
-当程序抛出：Rate limit exceeded 
-即表示该账号当日的API调用次数已耗尽
+- Python 3.8 或更高版本。
+- 建议使用虚拟环境。
+- 需要一个可用的 X/Twitter 登录会话 Cookie，至少包含 `auth_token` 和 `ct0`。
 
-if 选择包含转推:
-  爬完一个用户需要调用的API次数约为:总推数(含转推) / 19
-elif 不包含:
-  会大大减少API调用次数
+安装依赖：
 
-下载不计入次数 
+```bash
+pip install -r requirements.txt
 ```
 
-# Change Log 
-* **2025-08-09** 
-  * 支持获取用户主页内容(头像&banner&简介)--**请直接配置profile_down.py文件并运行**
+如果需要使用浏览器登录相关能力，还需要安装 Playwright 浏览器：
 
-* **2025-04-26** 
-  * 替换部分失效接口 
-  * `tag_down reply_down`增加`X-Client-Transaction-ID`校验, 请重新运行`pip install -r requirements.txt`安装依赖 
-  * // 目前生成的`transaction-id`仍有小概率失效, 当程序抛出`获取数据失败`时可以尝试重新运行 
-  * 目前`main text_down`似乎未受`X-Client-Transaction-ID`校验影响 
-  * Reference: `https://github.com/iSarabjitDhiman/XClientTransaction`
+```bash
+python -m playwright install
+```
 
-* **2025-03-03** 
-  * 支持下载评论区(指定用户或推文链接)--**请直接配置reply_down.py文件并运行**
+## 推荐启动方式
 
-* **2024-05-24** 
-  * 按Tag获取支持保存文本内容 
+### 轻量本地面板
 
-* **2024-05-11**
-  * 支持获取纯文本推文--**请直接配置text_down.py文件并运行**
-    
-    // (下方有预览) 注意，此功能会大量消耗API次数(参考上方公式)，默认排除转推内容
-* **2024-05-10**
-  * 支持按Tag获取--**请直接配置tag_down.py文件并运行**
-  
-    // 保存格式 (下方有预览)：. / {#Tag} / {datetime} \_ {@username} \_ { md5( media_url )[:4] } . { png / mp4 }
+适合自己本机快速使用。
 
-* **2024-03-09**
-  * 支持记录已下载内容,避免重复下载 (如有问题请发issue)
-  * 支持自动同步最新内容
-* **2024-01-16**
-  * 适配 [ **喜欢(Likes)** ] 标签页 
-* **2024-01-10**
-  * 新增统计数据 [ **Favorite, Retweet, Reply** ]
-* **2024-01-05**
-  * 适配Twieer新标签页 [ **亮点(HighLights)** ]
-* **2023-12-12**
-  * 适配Twitter新API
-* **2023-10-12**
-  * 添加 生成爬取信息 功能
-* **2023-10-06**
-  * 添加 时间范围限制 功能
-  * 统一文件保存格式
-    * 文件夹：用户id (@后面的)
-    * 文件：推文日期-[img/vid]_下载计数.文件后缀
-      
-* **2023-09-15**
-  * 添加 视频下载 功能
- 
----
+```bash
+python panel_app.py
+```
 
-<div align="center"> 
+启动后访问：
 
-| ![e53923662b627a645fcd2b0b3feadb3b](https://github.com/caolvchong-top/twitter_download/assets/57820488/39da9658-f40f-40d6-8480-9dff850076da) |
-|:--:| 
-| **(๑´ڡ`๑)** | 
+```text
+http://127.0.0.1:7860
+```
 
-</div>
+面板支持填写用户名、Cookie、保存目录、日期范围、图片格式、并发数量、代理和常用下载选项。任务启动后可以在页面里查看运行状态、API 调用数、下载数量和实时日志。
 
-部署
---- 
+### 完整 Web 管理端
 
-**Linux** : 
-``` 
-git clone https://github.com/caolvchong-top/twitter_download.git 
-cd twitter_download 
-pip3 install -r requirements.txt
+适合需要账号管理、任务列表和下载打包的场景。
 
-#Python版本须>=3.8  httpx==0.28.1
-``` 
-**运行** : 
-``` 
-配置settings.json文件
-python3 main.py 
-``` 
-**Windows** 和上面的一样，配置完setting.json后运行main.py即可 
+```bash
+python -m uvicorn web_app:app --host 127.0.0.1 --port 8000
+```
 
+默认管理员账号由环境变量控制：
 
-注意事项
----
+```text
+TW_WEB_ADMIN_USER=admin
+TW_WEB_ADMIN_PASSWORD=admin123
+```
 
-**按Tag下载&高级搜索 --> tag_down.py** 
+首次公开部署前请务必修改默认密码。本项目更推荐只在本机或可信内网运行。
 
-**下载评论区 --> reply_down.py** 
+### 传统脚本方式
 
-**指定用户纯文本推文获取 --> text_down.py** 
+如果只想按配置文件运行媒体下载：
 
-**指定用户媒体文件获取&转推&亮点&喜欢(只能本人账号)等 --> main.py + settings.json** 
+```bash
+python main.py
+```
 
-其余各种不能解决的需求建议试试tag_down的高级搜索, 或是提交Issue 
+脚本会读取 `settings.json`。常用字段如下：
 
+| 字段 | 说明 |
+| --- | --- |
+| `save_path` | 保存目录，留空则保存到项目目录 |
+| `user_lst` | 用户名列表，多个用户用英文逗号分隔，不需要 `@` |
+| `cookie` | X/Twitter Cookie，必须包含 `auth_token` 和 `ct0` |
+| `time_range` | 时间范围，格式如 `1990-01-01:2030-01-01` |
+| `has_retweet` | 是否包含转推，开启后 API 消耗会明显增加 |
+| `high_lights` | 是否下载 Highlights 内容 |
+| `likes` | 是否下载 Likes 内容，仅适合本人账号可访问内容 |
+| `down_log` | 记录已下载内容，避免重复下载 |
+| `autoSync` | 根据本地已有内容自动同步新内容 |
+| `image_format` | 图片格式，可选 `orig`、`jpg`、`png` |
+| `has_video` | 是否下载视频和 GIF |
+| `max_concurrent_requests` | 并发数量，失败较多时建议调低 |
+| `proxy` | 代理地址，例如 `http://localhost:7890` |
+| `md_output` | 是否生成 Markdown 记录 |
 
-Tag_Down 功能扩展 (高级搜索) &nbsp;&nbsp; <sub>//万金油</sub> 
----
-~~其实按功能应该叫`search_down`~~
+## 其他脚本入口
 
-对于部分主程序难以实现的需求可以尝试配置`tag_down.py`的`filter`来曲线解决: 
+| 脚本 | 用途 |
+| --- | --- |
+| `main.py` | 按用户名下载媒体内容 |
+| `tag_down.py` | 按 Tag 或高级搜索下载 |
+| `text_down.py` | 获取指定用户纯文本推文 |
+| `reply_down.py` | 下载指定用户或推文链接的评论区内容 |
+| `profile_down.py` | 获取用户主页资料 |
+| `panel_app.py` | 启动轻量本地面板 |
+| `web_app.py` | 启动完整 Web 管理端 |
 
-|部分例子|
-|:--:|
-|大批量下载 -> 分批下载|
-|指定时间范围|
-|各类关键词搜索/排除|
-|指定/排除目标用户|
-|指定大于互动量的推文|
-|指定推文语言|
-|......| 
+## 高级搜索说明
 
-``` 
-// 配置
+`tag_down.py` 可以配合 X 高级搜索使用。你可以在下面页面组装搜索条件：
 
-tag = '#ヨルクラ'
-# 填入tag 带上#号 可留空
-_filter = ""
-# (可选项) 高级搜索
-# 请在 https://x.com/search-advanced 中组装搜索条件，复制搜索栏的内容填入_filter
-# 注意，_filter中所有出现的双引号都需要改为单引号或添加转义符 例如 "Monika" -> 'Monika'
+```text
+https://x.com/search-advanced
+```
 
-# 当tag选项留空时，将尝试以_filter的内容作为文件夹名称
-``` 
-推特高级搜索：https://x.com/search-advanced 
+复制搜索栏里的条件后，填入 `tag_down.py` 的 `_filter`。如果条件中包含英文双引号，建议改成英文单引号或做好转义，避免 Python 字符串解析错误。
 
-实例参考：https://github.com/caolvchong-top/twitter_download/issues/63#issuecomment-2351039320 & https://github.com/caolvchong-top/twitter_download/issues/106
+常见用途：
 
+- 按关键词下载。
+- 按时间范围分批下载。
+- 指定或排除用户。
+- 指定语言。
+- 按互动量筛选。
+- 拆分大任务，降低失败概率和限流压力。
 
-效果预览
----
-![20230720134231](https://github.com/caolvchong-top/twitter_download/assets/57820488/ee6a1c13-2b0c-47e9-a260-1ac529bec678) 
+## API 限流与稳定性
 
+X/Twitter 接口会限制请求频率和每日调用量。如果程序出现类似 `Rate limit exceeded` 的提示，通常表示当前账号 API 调用次数暂时耗尽，需要等待恢复或减少任务规模。
 
-**↑↑老版本的图，仅效果参考**
+经验建议：
 
+- 不需要转推时关闭 `has_retweet`。
+- 大任务拆成多个小时间段执行。
+- 下载失败较多时降低 `max_concurrent_requests`。
+- Cookie 失效时重新获取 `auth_token` 和 `ct0`。
+- 使用代理时确认代理本身稳定可用。
 
-![20230720134253](https://github.com/caolvchong-top/twitter_download/assets/57820488/6e5ba42f-2dc4-4fa1-8cf6-152246378756)
+## 常见问题
 
+### Cookie 应该填什么？
 
-**评论区下载 Reply_down.py** 
+至少需要包含：
 
-![asehniubnsiebfi](https://github.com/user-attachments/assets/43708c8f-528d-4000-bf45-409a53ee3bc7)
+```text
+auth_token=你的值; ct0=你的值;
+```
 
- 
-**按Tag获取 Tag_down.py** 
+不要把示例里的 `xxxxxxxxxxx` 原样保留。Cookie 只建议在本机使用，不要提交到公开仓库。
 
-![image](https://github.com/caolvchong-top/twitter_download/assets/57820488/aa109e18-5ef1-4d77-902c-658ed1b3ff53)
+### Windows 路径怎么写？
 
-**纯文本推文获取(仅文本) Text_down.py** 
+配置文件里建议使用 `/`：
 
-![QQ截图20240511032859](https://github.com/caolvchong-top/twitter_download/assets/57820488/0998b6b1-c313-4b1d-a78e-525a666098b2)
+```text
+D:/Downloads/twitter
+```
 
+不要在 JSON 里直接写未转义的反斜杠。
 
+### 为什么下载变慢或失败？
 
-**图片下载效果**
+常见原因是账号限流、网络不稳定、代理异常、并发过高或目标内容权限不可见。先降低并发、缩小时间范围，再重新运行。
 
-![test1](https://github.com/caolvchong-top/twitter_download/assets/57820488/736f7554-612b-4bec-8baf-4a5ab45c6e04)
+### 已下载的内容如何避免重复？
 
+开启 `down_log` 后，程序会记录已下载内容，减少重复下载。如果你想强制重新下载，需要关闭该选项，或删除对应目录下的 `cache_data.log`。
 
-**视频下载效果**
+## 使用边界
 
-![test2](https://github.com/caolvchong-top/twitter_download/assets/57820488/6f732042-6f96-4e7a-bd16-e7d08a46a90e)
-
-
-
-**生成CSV统计**
-
-![屏幕截图 2023-10-12 223755](https://github.com/caolvchong-top/twitter_download/assets/57820488/b5dfc741-e10f-409a-b298-d56ea236bc5f)
-
-
+本项目是个人学习和本地管理工具，不提供任何规避平台限制的保证。下载到的图片、视频、文本等内容版权归内容创作者和平台所有。请勿用于商业采集、批量滥用、非法传播或侵犯他人权益的用途。因不当使用造成的账号风险、数据风险或法律责任，由使用者自行承担。
