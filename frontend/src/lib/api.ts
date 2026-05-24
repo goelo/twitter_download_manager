@@ -1,4 +1,4 @@
-import type { Account, ApiError, Task, User } from './types';
+import type { Account, ApiError, RunConfig, RunStatus, Task, User } from './types';
 
 async function request<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
   const response = await fetch(input, {
@@ -37,4 +37,9 @@ export const api = {
   browserLogin: () => request<{ ok: boolean }>('/api/accounts/browser-login', { method: 'POST' }),
   checkAccount: (id: number) => request<{ account: Account; ok: boolean; error: string }>(`/api/accounts/${id}/check`, { method: 'POST' }),
   deleteAccount: (id: number) => request<{ ok: boolean }>(`/api/accounts/${id}`, { method: 'DELETE' }),
+  runConfig: () => request<RunConfig>('/api/run/config'),
+  runStatus: () => request<RunStatus>('/api/run/status'),
+  runStart: (payload: RunConfig) => request<RunStatus>('/api/run/start', { method: 'POST', body: JSON.stringify(payload) }),
+  runStop: () => request<RunStatus>('/api/run/stop', { method: 'POST' }),
+  runLogs: () => fetch('/api/run/logs/stream', { credentials: 'include' }),
 };
