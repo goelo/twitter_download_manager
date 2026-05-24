@@ -1,0 +1,11 @@
+<svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="X data download logo">
+  <rect x="3" y="3" width="42" height="42" rx="10" fill="#2563EB"/>
+  <path d="M15 14L33 34" stroke="white" stroke-width="4" stroke-linecap="round"/>
+  <path d="M33 14L15 34" stroke="white" stroke-width="4" stroke-linecap="round" opacity="0.92"/>
+  <path d="M24 13V30" stroke="#FBBF24" stroke-width="3" stroke-linecap="round"/>
+  <path d="M18.5 25.5L24 31L29.5 25.5" stroke="#FBBF24" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="13" cy="36" r="2.5" fill="#DBEAFE"/>
+  <circle cx="35" cy="12" r="2.5" fill="#DBEAFE"/>
+  <path d="M15.5 35L21 31.5" stroke="#DBEAFE" stroke-width="2" stroke-linecap="round" opacity="0.8"/>
+  <path d="M32.5 13.5L27 17" stroke="#DBEAFE" stroke-width="2" stroke-linecap="round" opacity="0.8"/>
+</svg>

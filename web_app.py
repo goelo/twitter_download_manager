@@ -21,17 +21,41 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / 'web_data'
+
+
+def configured_data_dir():
+    value = os.environ.get('TW_WEB_DATA_DIR', '').strip()
+    if not value:
+        return BASE_DIR / 'web_data'
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    return path.resolve()
+
+
+PUBLIC_MODE = os.environ.get('TW_WEB_PUBLIC', '').lower() in {'1', 'true', 'yes', 'on'}
+SESSION_SECRET = os.environ.get('TW_WEB_SESSION_SECRET', 'dev-session-secret-change-me')
+DATA_DIR = configured_data_dir()
 TASKS_DIR = DATA_DIR / 'tasks'
 DB_PATH = DATA_DIR / 'web.sqlite3'
 DEFAULT_ADMIN_USER = os.environ.get('TW_WEB_ADMIN_USER', 'admin')
 DEFAULT_ADMIN_PASSWORD = os.environ.get('TW_WEB_ADMIN_PASSWORD', 'admin123')
+BROWSER_LOGIN_ENABLED = os.environ.get('TW_WEB_ENABLE_BROWSER_LOGIN', '').lower() in {'1', 'true', 'yes', 'on'} or not PUBLIC_MODE
 INTERNAL_USER = {'id': 1, 'username': DEFAULT_ADMIN_USER, 'role': 'admin'}
 
 app = FastAPI(title='Twitter Download Web')
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET,
+    session_cookie='tw_web_session',
+    same_site='lax',
+    https_only=PUBLIC_MODE,
+    max_age=60 * 60 * 24 * 7,
+)
 app.mount('/static', StaticFiles(directory=str(BASE_DIR / 'static')), name='static')
 if (BASE_DIR / 'frontend' / 'dist' / 'assets').exists():
     app.mount('/assets', StaticFiles(directory=str(BASE_DIR / 'frontend' / 'dist' / 'assets')), name='frontend-assets')
@@ -45,6 +69,7 @@ health_lock = threading.Lock()
 health_thread = None
 stop_health_worker = False
 HEALTH_CHECK_INTERVAL = int(os.environ.get('TW_WEB_HEALTH_INTERVAL', '900') or 900)
+TASK_RETRY_DELAY_SECONDS = int(os.environ.get('TW_WEB_RETRY_DELAY_SECONDS', '30') or 30)
 health_state = {
     'running': False,
     'last_started_at': None,
@@ -92,9 +117,18 @@ def verify_password(password, stored):
     return password_hash(password, salt).split('$', 1)[1] == expected
 
 
+def enforce_public_startup_safety():
+    if not PUBLIC_MODE:
+        return
+    if DEFAULT_ADMIN_PASSWORD == 'admin123':
+        raise RuntimeError('TW_WEB_PUBLIC=1 requires changing TW_WEB_ADMIN_PASSWORD from the default value.')
+    if SESSION_SECRET == 'dev-session-secret-change-me' or len(SESSION_SECRET) < 32:
+        raise RuntimeError('TW_WEB_PUBLIC=1 requires TW_WEB_SESSION_SECRET to be a random string of at least 32 characters.')
+
+
 def init_db():
-    DATA_DIR.mkdir(exist_ok=True)
-    TASKS_DIR.mkdir(exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    TASKS_DIR.mkdir(parents=True, exist_ok=True)
     with db() as conn:
         conn.executescript(
             '''
@@ -165,26 +199,43 @@ def ensure_column(conn, table, column, definition):
         conn.execute(f'alter table {table} add column {column} {definition}')
 
 
-def current_user(request: Request):
+def find_user(username):
     with db() as conn:
-        user = conn.execute('select * from users where username = ?', (DEFAULT_ADMIN_USER,)).fetchone()
-    return user or INTERNAL_USER
+        return conn.execute('select * from users where username = ?', (username,)).fetchone()
+
+
+def user_by_id(user_id):
+    with db() as conn:
+        return conn.execute('select * from users where id = ?', (user_id,)).fetchone()
+
+
+def current_user(request: Request):
+    user_id = request.session.get('user_id')
+    if not user_id:
+        return None
+    return user_by_id(user_id)
 
 
 def require_user(request: Request):
-    return current_user(request)
+    user = current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail='请先登录')
+    return user
 
 
 def require_admin(request: Request):
-    return require_user(request)
+    user = require_user(request)
+    if user['role'] != 'admin':
+        raise HTTPException(status_code=403, detail='需要管理员权限')
+    return user
 
 
 def require_api_user(request: Request):
-    return current_user(request)
+    return require_user(request)
 
 
 def require_api_admin(request: Request):
-    return require_api_user(request)
+    return require_admin(request)
 
 
 def row_to_dict(row):
@@ -451,6 +502,13 @@ def frontend_index():
     if index_path.exists():
         return FileResponse(index_path)
     return None
+
+
+def frontend_public_file(filename):
+    for path in [BASE_DIR / 'frontend' / 'dist' / filename, BASE_DIR / 'frontend' / 'public' / filename]:
+        if path.exists():
+            return FileResponse(path, media_type='image/svg+xml')
+    raise HTTPException(status_code=404, detail='Frontend asset not found')
 
 
 def read_log(path, max_chars=12000):
@@ -816,7 +874,16 @@ def should_retry_task(error_type):
 def worker_loop():
     while not stop_worker:
         with db() as conn:
-            task = conn.execute("select * from tasks where status = 'queued' order by id asc limit 1").fetchone()
+            task = conn.execute(
+                '''
+                select * from tasks
+                where status = 'queued'
+                  and (last_retry_at is null or datetime(last_retry_at, '+' || ? || ' seconds') <= datetime('now', 'localtime'))
+                order by id asc
+                limit 1
+                ''',
+                (TASK_RETRY_DELAY_SECONDS,),
+            ).fetchone()
         if not task:
             time.sleep(1)
             continue
@@ -923,12 +990,32 @@ def on_startup():
     start_health_worker()
 
 
+@app.on_event('shutdown')
+def on_shutdown():
+    global stop_worker, stop_health_worker
+    stop_worker = True
+    stop_health_worker = True
+    stop_main_process()
+
+
 @app.get('/', response_class=HTMLResponse)
 def home(request: Request):
     index = frontend_index()
     if index:
         return index
-    return RedirectResponse('/tasks')
+    if current_user(request):
+        return RedirectResponse('/tasks')
+    return RedirectResponse('/login')
+
+
+@app.get('/logo.svg')
+def logo_svg():
+    return frontend_public_file('logo.svg')
+
+
+@app.get('/favicon.svg')
+def favicon_svg():
+    return frontend_public_file('favicon.svg')
 
 
 @app.get('/run', response_class=HTMLResponse)
@@ -936,22 +1023,49 @@ def run_page(request: Request):
     index = frontend_index()
     if index:
         return index
-    return RedirectResponse('/tasks')
+    if current_user(request):
+        return RedirectResponse('/tasks')
+    return RedirectResponse('/login')
 
 
 @app.get('/login', response_class=HTMLResponse)
 def login_page(request: Request):
-    return RedirectResponse('/run')
+    index = frontend_index()
+    if index:
+        return index
+    if current_user(request):
+        return RedirectResponse('/run')
+    return HTMLResponse(
+        '''
+        <!doctype html>
+        <html lang="zh-CN">
+        <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>登录</title></head>
+        <body>
+          <form method="post" action="/login">
+            <label>用户名 <input name="username" autocomplete="username"></label>
+            <label>密码 <input name="password" type="password" autocomplete="current-password"></label>
+            <button type="submit">登录</button>
+          </form>
+        </body>
+        </html>
+        '''
+    )
 
 
 @app.post('/login')
 def login(request: Request, username: str = Form(...), password: str = Form(...)):
+    user = find_user(username)
+    if not user or not verify_password(password, user['password_hash']):
+        return RedirectResponse('/login?error=1', status_code=303)
+    request.session.clear()
+    request.session['user_id'] = user['id']
     return RedirectResponse('/run', status_code=303)
 
 
 @app.post('/logout')
 def logout(request: Request):
-    return RedirectResponse('/run', status_code=303)
+    request.session.clear()
+    return RedirectResponse('/login', status_code=303)
 
 
 @app.get('/tasks', response_class=HTMLResponse)
@@ -1266,6 +1380,8 @@ def delete_account(account_id: int, user=Depends(require_admin)):
 
 @app.post('/accounts/browser-login')
 def browser_login(user=Depends(require_admin)):
+    if not BROWSER_LOGIN_ENABLED:
+        raise HTTPException(status_code=403, detail='公网部署默认关闭浏览器登录，请手动录入 auth_token 和 ct0。')
     try:
         from playwright.sync_api import sync_playwright
     except Exception as exc:
@@ -1314,7 +1430,7 @@ def api_dashboard(user=Depends(require_api_user)):
 
 
 @app.get('/api/run/config')
-def api_run_config():
+def api_run_config(user=Depends(require_api_user)):
     settings_path = BASE_DIR / 'settings.json'
     settings = {}
     if settings_path.exists():
@@ -1351,12 +1467,12 @@ def api_run_config():
 
 
 @app.get('/api/run/status')
-def api_run_status():
+def api_run_status(user=Depends(require_api_user)):
     return run_snapshot()
 
 
 @app.post('/api/run/start')
-async def api_run_start(request: Request):
+async def api_run_start(request: Request, user=Depends(require_api_user)):
     data = await request.json()
     if 'cookie' not in data or 'auth_token=' not in str(data.get('cookie')) or 'ct0=' not in str(data.get('cookie')):
         raise HTTPException(status_code=400, detail='cookie 必须包含 auth_token 和 ct0。')
@@ -1375,12 +1491,12 @@ async def api_run_start(request: Request):
 
 
 @app.post('/api/run/stop')
-def api_run_stop():
+def api_run_stop(user=Depends(require_api_user)):
     return stop_main_process()
 
 
 @app.get('/api/run/logs/stream')
-async def api_run_logs_stream():
+async def api_run_logs_stream(user=Depends(require_api_user)):
     async def event_generator():
         last_version = -1
         while True:
@@ -1395,11 +1511,20 @@ async def api_run_logs_stream():
 
 @app.post('/api/login')
 async def api_login(request: Request):
-    return {'user': user_payload(INTERNAL_USER)}
+    data = await request.json()
+    username = (data.get('username') or '').strip()
+    password = data.get('password') or ''
+    user = find_user(username)
+    if not user or not verify_password(password, user['password_hash']):
+        raise HTTPException(status_code=401, detail='用户名或密码错误')
+    request.session.clear()
+    request.session['user_id'] = user['id']
+    return {'user': user_payload(user)}
 
 
 @app.post('/api/logout')
 def api_logout(request: Request):
+    request.session.clear()
     return {'ok': True}
 
 
@@ -1589,6 +1714,8 @@ async def api_add_account_manual(request: Request, user=Depends(require_api_admi
 
 @app.post('/api/accounts/browser-login')
 def api_browser_login(user=Depends(require_api_admin)):
+    if not BROWSER_LOGIN_ENABLED:
+        raise HTTPException(status_code=403, detail='公网部署默认关闭浏览器登录，请手动录入 auth_token 和 ct0。')
     browser_login(user)
     return {'ok': True}
 
@@ -1617,9 +1744,12 @@ def spa_fallback(full_path: str, request: Request):
     index = frontend_index()
     if index:
         return index
-    return RedirectResponse('/tasks')
+    if current_user(request):
+        return RedirectResponse('/tasks')
+    return RedirectResponse('/login')
 
 
+enforce_public_startup_safety()
 init_db()
 
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, BarChart3, CircleUserRound, FileArchive, FolderKanban, Plus, RefreshCcw, ShieldCheck, SquareTerminal, Play, Square, Target, TrendingUp, Network } from 'lucide-react';
+import { Activity, BarChart3, CircleUserRound, FileArchive, FolderKanban, LogOut, Plus, RefreshCcw, ShieldCheck, Play, Square, Target, TrendingUp, Network } from 'lucide-react';
 import { Navigate, NavLink, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from './lib/api';
 import { Badge } from './components/ui/badge';
@@ -22,13 +22,23 @@ function statusTone(status: string): BadgeTone {
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
+  const queryClient = useQueryClient();
+  const { data: meData } = useQuery({ queryKey: ['me'], queryFn: () => api.me(), retry: false });
+  const logout = useMutation({
+    mutationFn: api.logout,
+    onSuccess: () => {
+      queryClient.clear();
+      window.location.href = '/login';
+    },
+  });
+
   return (
     <div className="min-h-screen bg-[hsl(var(--bg))] text-[hsl(var(--text))]">
       <header className="sticky top-0 z-20 border-b border-[hsl(var(--line))] bg-[rgba(248,250,252,0.94)] backdrop-blur">
         <div className="mx-auto flex min-h-16 max-w-[1440px] flex-wrap items-center gap-3 px-4 py-3">
           <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-[rgba(37,99,235,0.08)] text-[hsl(var(--primary-dark))]">
-              <SquareTerminal className="h-5 w-5" />
+            <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-white shadow-sm">
+              <img src="/logo.svg" alt="X 舆情采集工作台" className="h-9 w-9" />
             </div>
             <div className="text-lg font-semibold leading-tight">X 舆情采集工作台</div>
           </div>
@@ -40,6 +50,18 @@ function Shell({ children }: { children: React.ReactNode }) {
             <NavItem to="/accounts" icon={<ShieldCheck className="h-4 w-4" />} label="账号" />
             <NavItem to="/proxies" icon={<Network className="h-4 w-4" />} label="代理" />
           </nav>
+          <div className="ml-auto flex items-center gap-2">
+            {meData?.user && (
+              <div className="hidden items-center gap-2 text-sm text-[hsl(var(--muted))] sm:flex">
+                <CircleUserRound className="h-4 w-4" />
+                {meData.user.username}
+              </div>
+            )}
+            <Button variant="secondary" size="sm" onClick={() => logout.mutate()} disabled={logout.isPending}>
+              <LogOut className="h-4 w-4" />
+              退出
+            </Button>
+          </div>
         </div>
       </header>
       <main className="mx-auto max-w-[1440px] px-4 py-5">{children}</main>
@@ -61,6 +83,90 @@ function NavItem({ to, icon, label }: { to: string; icon: React.ReactNode; label
       {icon}
       {label}
     </NavLink>
+  );
+}
+
+function LoginPage() {
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const { data: meData, isLoading } = useQuery({ queryKey: ['me'], queryFn: () => api.me(), retry: false });
+  const [username, setUsername] = useState('admin');
+  const [password, setPassword] = useState('');
+  const login = useMutation({
+    mutationFn: () => api.login({ username, password }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['me'] });
+      navigate('/run', { replace: true });
+    },
+  });
+
+  if (isLoading) {
+    return <div className="min-h-screen bg-[hsl(var(--bg))] px-4 py-8 text-sm text-[hsl(var(--muted))]">加载中...</div>;
+  }
+  if (meData?.user) {
+    return <Navigate to="/run" replace />;
+  }
+
+  return (
+    <div className="min-h-screen bg-[hsl(var(--bg))] px-4 py-8 text-[hsl(var(--text))]">
+      <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-md items-center">
+        <Card className="w-full">
+          <CardHeader>
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-white shadow-sm">
+                <img src="/logo.svg" alt="X 舆情采集工作台" className="h-9 w-9" />
+              </div>
+              <div>
+                <h1 className="text-xl font-semibold">登录工作台</h1>
+                <p className="mt-1 text-sm text-[hsl(var(--muted))]">使用部署时配置的管理员账号进入。</p>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <Field label="用户名">
+              <Input value={username} autoComplete="username" onChange={(event) => setUsername(event.target.value)} />
+            </Field>
+            <Field label="密码">
+              <Input type="password" value={password} autoComplete="current-password" onChange={(event) => setPassword(event.target.value)} />
+            </Field>
+            {login.error && (
+              <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(220,38,38,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">
+                {(login.error as Error).message}
+              </div>
+            )}
+            <Button className="w-full" onClick={() => login.mutate()} disabled={login.isPending || !username || !password}>
+              登录
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function AuthenticatedApp() {
+  const { data, isLoading, error } = useQuery({ queryKey: ['me'], queryFn: () => api.me(), retry: false });
+
+  if (isLoading) {
+    return <div className="min-h-screen bg-[hsl(var(--bg))] px-4 py-8 text-sm text-[hsl(var(--muted))]">加载中...</div>;
+  }
+  if (error || !data?.user) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return (
+    <Shell>
+      <Routes>
+        <Route path="/" element={<DashboardPage />} />
+        <Route path="/run" element={<RunControlPage />} />
+        <Route path="/tasks" element={<TaskListPage />} />
+        <Route path="/tasks/new" element={<TaskFormPage />} />
+        <Route path="/tasks/:id" element={<TaskDetailRoute />} />
+        <Route path="/accounts" element={<AccountsPage />} />
+        <Route path="/proxies" element={<ProxyPage />} />
+        <Route path="*" element={<Navigate to="/run" replace />} />
+      </Routes>
+    </Shell>
   );
 }
 
@@ -103,6 +209,7 @@ function BeginnerPanel({
 
 function DashboardPage() {
   const { data, isLoading } = useQuery({ queryKey: ['dashboard'], queryFn: () => api.dashboard(), refetchInterval: 5000 });
+  const { data: health } = useQuery({ queryKey: ['health-status'], queryFn: () => api.healthStatus(), refetchInterval: 15000 });
   const dashboard = data;
 
   if (isLoading && !dashboard) return <div className="text-sm text-[hsl(var(--muted))]">加载中...</div>;
@@ -186,10 +293,19 @@ function DashboardPage() {
           <CardHeader>
             <div className="flex items-center gap-2">
               <ShieldCheck className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
-              <h2 className="font-semibold">汇报边界</h2>
+              <h2 className="font-semibold">系统健康</h2>
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              <InfoCard title="账号 active" value={String(health?.accounts?.active ?? 0)} />
+              <InfoCard title="代理 active" value={String(health?.proxies?.active ?? 0)} />
+            </div>
+            <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2 text-sm">
+              <div className="font-medium">健康检查：{health?.running ? '运行中' : '空闲'}</div>
+              <div className="mt-1 text-[hsl(var(--muted))]">上次完成：{health?.last_finished_at || '-'}</div>
+              {health?.last_error && <div className="mt-1 text-[hsl(var(--danger))]">{health.last_error}</div>}
+            </div>
             {dashboard.compliance_notes.map((note) => (
               <div key={note} className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2 text-sm text-[hsl(var(--muted))]">
                 {note}
@@ -1237,18 +1353,10 @@ function RunControlPage() {
 
 function App() {
   return (
-    <Shell>
-      <Routes>
-        <Route path="/" element={<DashboardPage />} />
-        <Route path="/run" element={<RunControlPage />} />
-        <Route path="/tasks" element={<TaskListPage />} />
-        <Route path="/tasks/new" element={<TaskFormPage />} />
-        <Route path="/tasks/:id" element={<TaskDetailRoute />} />
-        <Route path="/accounts" element={<AccountsPage />} />
-        <Route path="/proxies" element={<ProxyPage />} />
-        <Route path="*" element={<Navigate to="/run" replace />} />
-      </Routes>
-    </Shell>
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="*" element={<AuthenticatedApp />} />
+    </Routes>
   );
 }
 

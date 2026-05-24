@@ -1,0 +1,16 @@
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+frontend/node_modules
+frontend/dist
+web_data
+.panel
+data
+*.log
+.env
+.env.*
+!env.production.example

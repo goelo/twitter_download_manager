@@ -33,6 +33,23 @@ pip install -r requirements.txt
 python -m playwright install
 ```
 
+## 线上部署
+
+仓库已经带好 Docker 发布文件，适合单机 Linux 公网部署。
+
+```bash
+cp env.production.example .env.production
+# 修改 DOMAIN、ACME_EMAIL、TW_WEB_ADMIN_PASSWORD、TW_WEB_SESSION_SECRET
+docker compose --env-file .env.production up -d --build
+```
+
+部署后：
+
+- 应用只监听本机 `127.0.0.1:8000`。
+- Caddy 负责 HTTPS 和域名反代。
+- 数据持久化在 `./data`，包括 SQLite、任务文件和下载结果。
+- 公网模式下默认关闭浏览器登录，建议手动录入 `auth_token` 和 `ct0`。
+
 ## 推荐启动方式
 
 ### 完整 Web 管理端

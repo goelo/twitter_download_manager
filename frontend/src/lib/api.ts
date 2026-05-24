@@ -1,4 +1,4 @@
-import type { Account, ApiError, Dashboard, ProxyItem, RunConfig, RunStatus, Task } from './types';
+import type { Account, ApiError, Dashboard, HealthStatus, ProxyItem, RunConfig, RunStatus, Task } from './types';
 
 async function request<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
   const response = await fetch(input, {
@@ -25,6 +25,10 @@ async function request<T>(input: RequestInfo | URL, init?: RequestInit): Promise
 }
 
 export const api = {
+  me: () => request<{ user: import('./types').User }>('/api/me'),
+  login: (payload: { username: string; password: string }) => request<{ user: import('./types').User }>('/api/login', { method: 'POST', body: JSON.stringify(payload) }),
+  logout: () => request<{ ok: boolean }>('/api/logout', { method: 'POST' }),
+  healthStatus: () => request<HealthStatus>('/api/health/status'),
   dashboard: () => request<Dashboard>('/api/dashboard'),
   tasks: () => request<{ tasks: Task[] }>('/api/tasks'),
   task: (id: number) => request<{ task: Task }>(`/api/tasks/${id}`),

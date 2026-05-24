@@ -93,6 +93,16 @@ export type Dashboard = {
   compliance_notes: string[];
 };
 
+export type HealthStatus = {
+  running: boolean;
+  last_started_at: string | null;
+  last_finished_at: string | null;
+  last_error: string | null;
+  interval_seconds: number;
+  accounts: Record<string, number>;
+  proxies: Record<string, number>;
+};
+
 export type ApiError = {
   detail: string;
 };
