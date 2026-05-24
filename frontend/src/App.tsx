@@ -12,6 +12,16 @@ import type { Account, Dashboard, ProxyItem, RunConfig, RunStatus, Task } from '
 import { cn } from './lib/utils';
 
 type BadgeTone = 'neutral' | 'success' | 'warning' | 'danger' | 'primary';
+type TimePreset = '7d' | '30d' | '90d' | 'year' | 'all' | 'custom';
+
+const ALL_TIME_RANGE = '1990-01-01:2030-01-01';
+const TIME_PRESETS: Array<{ key: TimePreset; label: string }> = [
+  { key: '7d', label: '最近7天' },
+  { key: '30d', label: '最近30天' },
+  { key: '90d', label: '最近90天' },
+  { key: 'year', label: '今年' },
+  { key: 'all', label: '全部' },
+];
 
 function statusTone(status: string): BadgeTone {
   if (status === 'completed' || status === 'active') return 'success';
@@ -19,6 +29,40 @@ function statusTone(status: string): BadgeTone {
   if (status === 'queued' || status === 'rate_limited' || status === 'partial_failed' || status === 'network_failed') return 'warning';
   if (status === 'failed' || status === 'cancelled' || status === 'expired' || status === 'auth_expired') return 'danger';
   return 'neutral';
+}
+
+function formatDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function rangeFromPreset(preset: TimePreset) {
+  const today = new Date();
+  const end = formatDate(today);
+  if (preset === 'all') return ALL_TIME_RANGE;
+  if (preset === 'year') return `${today.getFullYear()}-01-01:${end}`;
+  const days = preset === '7d' ? 7 : preset === '30d' ? 30 : 90;
+  const start = new Date(today);
+  start.setDate(today.getDate() - days + 1);
+  return `${formatDate(start)}:${end}`;
+}
+
+function splitTimeRange(timeRange: string) {
+  const [start = '', end = ''] = String(timeRange || '').split(':');
+  return { start, end };
+}
+
+function timeRangeError(timeRange: string) {
+  const { start, end } = splitTimeRange(timeRange);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+    return '请选择完整的开始日期和结束日期。';
+  }
+  if (end < start) {
+    return '结束日期不能早于开始日期。';
+  }
+  return '';
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
@@ -43,7 +87,7 @@ function Shell({ children }: { children: React.ReactNode }) {
             <div className="text-lg font-semibold leading-tight">X 舆情采集工作台</div>
           </div>
           <nav className="flex flex-wrap items-center gap-2 md:ml-4">
-            <NavItem to="/" icon={<BarChart3 className="h-4 w-4" />} label="汇报看板" />
+            <NavItem to="/" icon={<BarChart3 className="h-4 w-4" />} label="看板" />
             <NavItem to="/run" icon={<Activity className="h-4 w-4" />} label="运行控制" />
             <NavItem to="/tasks" icon={<FolderKanban className="h-4 w-4" />} label="任务" />
             <NavItem to="/tasks/new" icon={<Plus className="h-4 w-4" />} label="新建" />
@@ -170,40 +214,11 @@ function AuthenticatedApp() {
   );
 }
 
-function BeginnerPanel({
-  title,
-  description,
-  steps,
-  children,
-}: {
-  title: string;
-  description: string;
-  steps: string[];
-  children?: React.ReactNode;
-}) {
+function ActionBar({ children }: { children: React.ReactNode }) {
   return (
-    <section className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-4 shadow-[0_10px_30px_rgba(15,23,42,0.06)]">
-      <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-center">
-        <div className="space-y-3">
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wide text-[hsl(var(--accent))]">小白操作面板</div>
-            <h3 className="mt-1 text-lg font-semibold text-[hsl(var(--text))]">{title}</h3>
-            <p className="mt-1 text-sm text-[hsl(var(--muted))]">{description}</p>
-          </div>
-          <ol className="grid gap-2 sm:grid-cols-3">
-            {steps.map((step, index) => (
-              <li key={step} className="flex min-h-12 items-center gap-3 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3 py-2 text-sm">
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--primary-dark))] text-xs font-semibold text-white">
-                  {index + 1}
-                </span>
-                <span className="leading-snug">{step}</span>
-              </li>
-            ))}
-          </ol>
-        </div>
-        {children && <div className="flex flex-wrap gap-2 lg:justify-end">{children}</div>}
-      </div>
-    </section>
+    <div className="flex flex-wrap items-center justify-end gap-2 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-4 py-3">
+      {children}
+    </div>
   );
 }
 
@@ -218,25 +233,21 @@ function DashboardPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-3xl font-semibold">X 舆情采集汇报看板</h1>
+        <h1 className="text-3xl font-semibold">X 舆情采集看板</h1>
         <p className="mt-2 max-w-3xl text-sm text-[hsl(var(--muted))]">
-          面向内部研究和授权账号的采集演示原型，覆盖账号、关键词、评论和主页资料任务。
+          面向内部研究和授权账号的数据采集项目，覆盖账号、关键词、评论和主页资料任务。
         </p>
       </div>
-      <BeginnerPanel
-        title="先从看板了解结果"
-        description="这里适合快速看最近采集情况，再决定要新建任务还是查看已有任务。"
-        steps={['看总数和最近任务', '打开任务看日志', '套用模板新建任务']}
-      >
+      <ActionBar>
         <Button onClick={() => (window.location.href = '/tasks/new')}>
           <Plus className="h-4 w-4" />
-          新建演示任务
+          新建采集任务
         </Button>
         <Button variant="secondary" onClick={() => (window.location.href = '/tasks')}>
           <FolderKanban className="h-4 w-4" />
           查看任务
         </Button>
-      </BeginnerPanel>
+      </ActionBar>
 
       <div className="grid gap-3 md:grid-cols-4">
         <Metric title="总任务" value={dashboard.totals.tasks} />
@@ -319,7 +330,7 @@ function DashboardPage() {
         <CardHeader>
           <div className="flex items-center gap-2">
             <Target className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
-            <h2 className="font-semibold">老板演示任务模板</h2>
+            <h2 className="font-semibold">任务模板</h2>
           </div>
         </CardHeader>
         <CardContent>
@@ -342,7 +353,7 @@ function DemoTemplate({ template }: { template: Dashboard['templates'][number] }
         <p className="mt-2 text-sm text-[hsl(var(--muted))]">{template.description}</p>
       </div>
       <Button className="mt-4 w-full" variant="secondary" onClick={() => (window.location.href = `/tasks/new?template=${encodeURIComponent(template.name)}`)}>
-        套用模板
+        使用模板
       </Button>
     </div>
   );
@@ -365,11 +376,7 @@ function TaskListPage() {
         <h2 className="text-2xl font-semibold">任务</h2>
         <p className="mt-1 text-sm text-[hsl(var(--muted))]">排队、运行、完成、失败都在这里看。</p>
       </div>
-      <BeginnerPanel
-        title="看任务进度"
-        description="不确定程序有没有在跑时，先看这里的状态和详情日志。"
-        steps={['刷新任务列表', '打开任务详情', '下载结果或查看错误']}
-      >
+      <ActionBar>
         <Button variant="secondary" onClick={() => queryClient.invalidateQueries({ queryKey: ['tasks'] })}>
           <RefreshCcw className="h-4 w-4" />
           刷新
@@ -378,7 +385,7 @@ function TaskListPage() {
           <Plus className="h-4 w-4" />
           新建任务
         </Button>
-      </BeginnerPanel>
+      </ActionBar>
 
       <div className="grid gap-3 md:grid-cols-4">
         <Metric title="总任务" value={stats.total} />
@@ -575,7 +582,7 @@ function TaskFormPage() {
     task_type: 'user_media',
     account_id: 0,
     targets: '',
-    time_range: '1990-01-01:2030-01-01',
+    time_range: rangeFromPreset('90d'),
     max_concurrent_requests: 8,
     has_retweet: false,
     high_lights: false,
@@ -599,9 +606,17 @@ function TaskFormPage() {
     min_retweets: 0,
     search_advanced: '',
   });
+  const [timePreset, setTimePreset] = useState<TimePreset>('90d');
   const [error, setError] = useState('');
   const create = useMutation({
-    mutationFn: () => api.createTask(form),
+    mutationFn: () => {
+      const nextError = timeRangeError(form.time_range);
+      if (nextError) {
+        setError(nextError);
+        return Promise.reject(new Error(nextError));
+      }
+      return api.createTask(form);
+    },
     onSuccess: (res) => (window.location.href = `/tasks/${res.task.id}`),
     onError: (err: Error) => setError(err.message),
   });
@@ -617,9 +632,26 @@ function TaskFormPage() {
     const templateName = searchParams.get('template');
     const template = dashboardData?.templates.find((item) => item.name === templateName);
     if (template) {
+      const payload = template.payload as { time_range?: string };
       setForm((prev) => ({ ...prev, ...template.payload }));
+      if (payload.time_range) {
+        const matchedPreset = TIME_PRESETS.find((item) => rangeFromPreset(item.key) === payload.time_range);
+        setTimePreset(matchedPreset?.key || 'custom');
+      }
     }
   }, [dashboardData, searchParams]);
+
+  const timeError = timeRangeError(form.time_range);
+  const applyTimePreset = (preset: TimePreset) => {
+    setTimePreset(preset);
+    setError('');
+    setForm((prev) => ({ ...prev, time_range: rangeFromPreset(preset) }));
+  };
+  const applyCustomTimeRange = (start: string, end: string) => {
+    setTimePreset('custom');
+    setError('');
+    setForm((prev) => ({ ...prev, time_range: `${start}:${end}` }));
+  };
 
   return (
     <div className="space-y-4">
@@ -627,18 +659,14 @@ function TaskFormPage() {
         <h2 className="text-2xl font-semibold">新建任务</h2>
         <p className="mt-1 text-sm text-[hsl(var(--muted))]">按任务类型填写对应字段，提交后自动进入队列。</p>
       </div>
-      <BeginnerPanel
-        title="按顺序填任务"
-        description="先选账号和任务类型，再填目标用户或搜索词，最后提交进入队列。"
-        steps={['选择可用 X 账号', '填写目标和时间范围', '提交任务后看进度']}
-      >
-        <Button onClick={() => create.mutate()} disabled={create.isPending || !accounts?.length}>
+      <ActionBar>
+        <Button onClick={() => create.mutate()} disabled={create.isPending || !accounts?.length || Boolean(timeError)}>
           提交任务
         </Button>
         <Button variant="secondary" onClick={() => (window.location.href = '/tasks')}>
           取消
         </Button>
-      </BeginnerPanel>
+      </ActionBar>
       {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(220,38,38,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
 
       <div className="grid gap-4 xl:grid-cols-2">
@@ -667,7 +695,13 @@ function TaskFormPage() {
               <Textarea value={form.targets} onChange={(e) => setForm((prev) => ({ ...prev, targets: e.target.value }))} rows={4} />
             </Field>
             <Field label="时间范围">
-              <Input value={form.time_range} onChange={(e) => setForm((prev) => ({ ...prev, time_range: e.target.value }))} />
+              <TimeRangePicker
+                value={form.time_range}
+                preset={timePreset}
+                error={timeError}
+                onPresetChange={applyTimePreset}
+                onCustomChange={applyCustomTimeRange}
+              />
             </Field>
             <Field label="并发下载数">
               <Input type="number" value={form.max_concurrent_requests} onChange={(e) => setForm((prev) => ({ ...prev, max_concurrent_requests: Number(e.target.value) }))} />
@@ -774,6 +808,50 @@ function Check({ label, checked, onCheckedChange }: { label: string; checked: bo
   );
 }
 
+function TimeRangePicker({
+  value,
+  preset,
+  error,
+  onPresetChange,
+  onCustomChange,
+}: {
+  value: string;
+  preset: TimePreset;
+  error: string;
+  onPresetChange: (preset: TimePreset) => void;
+  onCustomChange: (start: string, end: string) => void;
+}) {
+  const { start, end } = splitTimeRange(value);
+  return (
+    <div className="space-y-3 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-3">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+        {TIME_PRESETS.map((item) => (
+          <Button
+            key={item.key}
+            type="button"
+            variant={preset === item.key ? 'default' : 'secondary'}
+            size="sm"
+            onClick={() => onPresetChange(item.key)}
+          >
+            {item.label}
+          </Button>
+        ))}
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="开始日期">
+          <Input type="date" value={start} onChange={(event) => onCustomChange(event.target.value, end)} />
+        </Field>
+        <Field label="结束日期">
+          <Input type="date" value={end} onChange={(event) => onCustomChange(start, event.target.value)} />
+        </Field>
+      </div>
+      <div className={cn('rounded-lg border px-3 py-2 text-sm', error ? 'border-[hsl(var(--danger))] bg-[rgba(220,38,38,0.08)] text-[hsl(var(--danger))]' : 'border-[hsl(var(--line))] bg-[hsl(var(--panel))] text-[hsl(var(--muted))]')}>
+        {error || `实际范围：${value}`}
+      </div>
+    </div>
+  );
+}
+
 function TaskDetailPage({ id }: { id: number }) {
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery({ queryKey: ['task', id], queryFn: () => api.task(id), refetchInterval: 4000 });
@@ -793,11 +871,7 @@ function TaskDetailPage({ id }: { id: number }) {
         <h2 className="text-2xl font-semibold">{task.title}</h2>
         <p className="mt-1 text-sm text-[hsl(var(--muted))]">#{task.id} · {task.username || '-'} · {task.created_at}</p>
       </div>
-      <BeginnerPanel
-        title="看单个任务结果"
-        description="先确认状态，再看日志判断是否成功，完成后可以打包下载输出文件。"
-        steps={['刷新状态', '查看日志和错误', '下载结果文件']}
-      >
+      <ActionBar>
         <Button variant="secondary" onClick={() => queryClient.invalidateQueries({ queryKey: ['task', id] })}>
           <RefreshCcw className="h-4 w-4" />
           刷新
@@ -816,7 +890,7 @@ function TaskDetailPage({ id }: { id: number }) {
         >
           复制错误信息
         </Button>
-      </BeginnerPanel>
+      </ActionBar>
       {copyStatus && <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2 text-sm text-[hsl(var(--muted))]">{copyStatus}</div>}
 
       <div className="grid gap-3 md:grid-cols-4">
@@ -968,16 +1042,12 @@ function AccountsPage() {
         <h2 className="text-2xl font-semibold">X 账号池</h2>
         <p className="mt-1 text-sm text-[hsl(var(--muted))]">维护会话，任务从这里选账号。</p>
       </div>
-      <BeginnerPanel
-        title="先准备可用账号"
-        description="账号状态是 active 后，任务和运行控制才能稳定使用 Cookie。"
-        steps={['浏览器登录 X', '检测账号状态', '回到任务或运行控制']}
-      >
+      <ActionBar>
         <Button onClick={() => browserLogin.mutate()} disabled={browserLogin.isPending}>
           <CircleUserRound className="h-4 w-4" />
           浏览器登录
         </Button>
-      </BeginnerPanel>
+      </ActionBar>
       {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(220,38,38,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
 
       <Card>
@@ -1100,16 +1170,6 @@ function ProxyPage() {
         <h2 className="text-2xl font-semibold">IP / 代理池</h2>
         <p className="mt-1 text-sm text-[hsl(var(--muted))]">保存可用代理，运行时从这里选择生效代理。</p>
       </div>
-      <BeginnerPanel
-        title="先准备可用代理"
-        description="先录入代理，再点检测；通过后就能在运行页选择。"
-        steps={['录入代理地址', '检测连通性', '在运行页选择代理']}
-      >
-        <Button onClick={() => addProxy.mutate()} disabled={addProxy.isPending || !form.proxy}>
-          <Network className="h-4 w-4" />
-          保存代理
-        </Button>
-      </BeginnerPanel>
       {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(220,38,38,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
 
       <Card>
@@ -1259,11 +1319,7 @@ function RunControlPage() {
         <h2 className="text-2xl font-semibold">运行控制</h2>
         <p className="mt-1 text-sm text-[hsl(var(--muted))]">配置下载参数、启动任务并查看实时日志。</p>
       </div>
-      <BeginnerPanel
-        title="最快启动下载"
-        description="第一次使用只需要填 Cookie、用户名列表和保存路径，其它选项可以先保持默认。"
-        steps={['粘贴 auth_token 和 ct0', '填写用户名和保存路径', '点击启动后看日志']}
-      >
+      <ActionBar>
         <Button onClick={handleStart} disabled={start.isPending}>
           <Play className="h-4 w-4" />
           启动
@@ -1278,7 +1334,7 @@ function RunControlPage() {
         >
           复制日志
         </Button>
-      </BeginnerPanel>
+      </ActionBar>
 
       {preflightErrors.length > 0 && (
         <div className="rounded-lg border border-[hsl(var(--warning))] bg-[rgba(245,158,11,0.12)] px-4 py-3 text-sm text-[hsl(var(--text))]">

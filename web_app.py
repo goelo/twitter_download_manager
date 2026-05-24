@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Thread
 
@@ -1209,7 +1209,7 @@ def dashboard_payload(user):
         'recent_tasks': tasks_payload[:8],
         'templates': demo_templates(),
         'compliance_notes': [
-            '当前版本适合内部研究、演示和授权账号下的数据整理。',
+            '当前版本适合内部研究和授权账号下的数据整理。',
             'X/Twitter 存在接口限流和平台规则约束，生产化建议迁移到官方 API。',
             '日志和页面会隐藏 auth_token、ct0 与完整 Cookie，避免截图泄露。',
         ],
@@ -1217,26 +1217,28 @@ def dashboard_payload(user):
 
 
 def demo_templates():
+    recent_90 = f'{(datetime.now() - timedelta(days=89)).strftime("%Y-%m-%d")}:{datetime.now().strftime("%Y-%m-%d")}'
+    recent_30 = f'{(datetime.now() - timedelta(days=29)).strftime("%Y-%m-%d")}:{datetime.now().strftime("%Y-%m-%d")}'
     return [
         {
-            'name': '重点账号采集',
-            'description': '按用户名采集推文媒体与互动指标，适合竞品账号和重点人物动态归档。',
-            'payload': {'task_type': 'user_media', 'targets': 'elonmusk', 'has_video': True, 'md_output': True},
+            'name': '重点账号动态采集',
+            'description': '按用户名采集推文、媒体和互动指标，适合竞品账号与重点人物动态归档。',
+            'payload': {'task_type': 'user_media', 'targets': 'elonmusk', 'time_range': recent_90, 'has_video': True, 'md_output': True},
         },
         {
-            'name': '关键词舆情',
-            'description': '按关键词或高级搜索语法采集最新内容，适合热点和品牌词监测。',
-            'payload': {'task_type': 'search', 'tag': 'AI', 'advanced_filter': 'lang:zh min_faves:5', 'down_count': 50, 'media_latest': True},
+            'name': '关键词内容监测',
+            'description': '按关键词或高级搜索语法采集最新内容，适合热点和品牌词趋势跟踪。',
+            'payload': {'task_type': 'search', 'tag': 'AI', 'advanced_filter': 'lang:zh min_faves:5', 'time_range': recent_30, 'down_count': 50, 'media_latest': True},
         },
         {
-            'name': '评论区洞察',
+            'name': '评论互动分析',
             'description': '围绕指定推文或用户抓取评论，适合观察争议点和高互动反馈。',
-            'payload': {'task_type': 'replies', 'targets': 'https://x.com/user/status/1234567890', 'media_down': True, 'min_replies': 1},
+            'payload': {'task_type': 'replies', 'targets': 'https://x.com/user/status/1234567890', 'time_range': recent_90, 'media_down': True, 'min_replies': 1},
         },
         {
-            'name': '主页资料归档',
+            'name': '主页资料采集',
             'description': '采集头像、banner 和简介，适合建立账号基础资料库。',
-            'payload': {'task_type': 'profile', 'targets': 'x'},
+            'payload': {'task_type': 'profile', 'targets': 'x', 'time_range': '1990-01-01:2030-01-01'},
         },
     ]
 
