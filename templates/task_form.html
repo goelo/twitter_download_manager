@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% set title = "新建任务" %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1>新建任务</h1>
+    <p>选择任务类型后，只填写对应区域即可。</p>
+  </div>
+</section>
+
+{% if error %}<p class="alert danger">{{ error }}</p>{% endif %}
+{% if not accounts %}
+  <p class="alert warning">还没有可用 X 账号。请管理员先到 X账号 页面添加或浏览器登录。</p>
+{% endif %}
+
+<form method="post" action="/tasks" class="grid-form">
+  <section class="panel form-section">
+    <h2>基础</h2>
+    <label>
+      任务类型
+      <select name="task_type" required>
+        <option value="user_media">用户媒体</option>
+        <option value="search">搜索/Tag</option>
+        <option value="text">用户文本</option>
+        <option value="replies">评论区</option>
+        <option value="profile">主页资料</option>
+      </select>
+    </label>
+    <label>
+      X账号
+      <select name="account_id" required>
+        {% for account in accounts %}
+          <option value="{{ account.id }}">{{ account.label }}{% if account.screen_name %} (@{{ account.screen_name }}){% endif %}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      目标用户 / 推文链接
+      <textarea name="targets" rows="4" placeholder="用户媒体/文本/主页: alice,bob&#10;评论区: 每行一个 @user 或 https://x.com/.../status/..."></textarea>
+    </label>
+    <label>
+      时间范围
+      <input name="time_range" value="1990-01-01:2030-01-01">
+    </label>
+    <label>
+      并发下载数
+      <input name="max_concurrent_requests" type="number" min="1" max="64" value="8">
+    </label>
+  </section>
+
+  <section class="panel form-section">
+    <h2>用户媒体</h2>
+    <div class="checks">
+      <label><input type="checkbox" name="has_video" checked> 下载视频</label>
+      <label><input type="checkbox" name="has_retweet"> 包含转推</label>
+      <label><input type="checkbox" name="high_lights"> 亮点</label>
+      <label><input type="checkbox" name="likes"> Likes</label>
+      <label><input type="checkbox" name="down_log"> 去重日志</label>
+      <label><input type="checkbox" name="auto_sync"> 自动同步</label>
+      <label><input type="checkbox" name="md_output"> 输出 Markdown</label>
+    </div>
+    <label>
+      图片格式
+      <select name="image_format">
+        <option value="orig">orig</option>
+        <option value="jpg">jpg</option>
+        <option value="png">png</option>
+      </select>
+    </label>
+    <label>
+      单个 Markdown 媒体数量
+      <input name="media_count_limit" type="number" min="0" value="350">
+    </label>
+    <label>
+      代理
+      <input name="proxy" placeholder="http://localhost:7890">
+    </label>
+  </section>
+
+  <section class="panel form-section">
+    <h2>搜索 / Tag</h2>
+    <label>
+      Tag
+      <input name="tag" placeholder="#example">
+    </label>
+    <label>
+      高级搜索
+      <textarea name="advanced_filter" rows="3" placeholder="from:example since:2025-01-01 until:2025-02-01"></textarea>
+    </label>
+    <label>
+      下载数量
+      <input name="down_count" type="number" min="50" step="50" value="50">
+    </label>
+    <div class="checks">
+      <label><input type="checkbox" name="media_latest"> 最新页媒体</label>
+      <label><input type="checkbox" name="text_down"> 文本模式</label>
+    </div>
+  </section>
+
+  <section class="panel form-section">
+    <h2>评论区</h2>
+    <div class="checks">
+      <label><input type="checkbox" name="media_down" checked> 下载评论媒体</label>
+    </div>
+    <label>
+      最小评论数
+      <input name="min_replies" type="number" min="0" value="1">
+    </label>
+    <label>
+      最小喜欢数
+      <input name="min_faves" type="number" min="0" value="0">
+    </label>
+    <label>
+      最小转推数
+      <input name="min_retweets" type="number" min="0" value="0">
+    </label>
+    <label>
+      评论高级搜索
+      <textarea name="search_advanced" rows="3"></textarea>
+    </label>
+  </section>
+
+  <div class="form-actions">
+    <button type="submit" class="primary" {% if not accounts %}disabled{% endif %}>提交任务</button>
+    <a href="/tasks" class="button">取消</a>
+  </div>
+</form>
+{% endblock %}

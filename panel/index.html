@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Learning Download Panel</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">Local Learning Tool</p>
+      <h1>Twitter/X 下载学习面板</h1>
+    </div>
+    <div class="status-pill" id="statusPill">
+      <span class="dot"></span>
+      <span id="statusText">等待启动</span>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="config-panel" aria-labelledby="configTitle">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Configuration</p>
+          <h2 id="configTitle">任务配置</h2>
+        </div>
+        <button class="icon-button" id="reloadConfig" type="button" title="重新读取默认配置" aria-label="重新读取默认配置">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+        </button>
+      </div>
+
+      <form id="configForm" class="form-grid">
+        <label class="field span-2">
+          <span>用户名</span>
+          <input id="user_lst" name="user_lst" placeholder="例如：lilmonix3,matchach" autocomplete="off" required>
+          <small>多个用户名用英文逗号分隔，不需要 @。</small>
+        </label>
+
+        <label class="field span-2">
+          <span>Cookie</span>
+          <textarea id="cookie" name="cookie" rows="4" placeholder="auth_token=...; ct0=...;" required></textarea>
+          <small>仅写入本机运行时配置，用于真实请求。</small>
+        </label>
+
+        <label class="field span-2">
+          <span>保存目录</span>
+          <input id="save_path" name="save_path" placeholder="留空则保存到项目目录">
+        </label>
+
+        <label class="field">
+          <span>开始日期</span>
+          <input id="start_date" name="start_date" type="date" required>
+        </label>
+
+        <label class="field">
+          <span>结束日期</span>
+          <input id="end_date" name="end_date" type="date" required>
+        </label>
+
+        <label class="field">
+          <span>图片格式</span>
+          <select id="image_format" name="image_format">
+            <option value="orig">原始格式</option>
+            <option value="jpg">JPG</option>
+            <option value="png">PNG</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>并发数量</span>
+          <input id="max_concurrent_requests" name="max_concurrent_requests" type="number" min="1" max="64" value="8">
+        </label>
+
+        <label class="field span-2">
+          <span>代理</span>
+          <input id="proxy" name="proxy" placeholder="例如：http://localhost:7890">
+        </label>
+
+        <div class="switch-grid span-2" aria-label="下载选项">
+          <label class="switch-row">
+            <input id="has_video" name="has_video" type="checkbox">
+            <span>下载视频/GIF</span>
+          </label>
+          <label class="switch-row">
+            <input id="has_retweet" name="has_retweet" type="checkbox">
+            <span>包含转推</span>
+          </label>
+          <label class="switch-row">
+            <input id="down_log" name="down_log" type="checkbox">
+            <span>避免重复下载</span>
+          </label>
+          <label class="switch-row">
+            <input id="autoSync" name="autoSync" type="checkbox">
+            <span>自动同步最新内容</span>
+          </label>
+          <label class="switch-row">
+            <input id="md_output" name="md_output" type="checkbox">
+            <span>生成 Markdown 记录</span>
+          </label>
+        </div>
+
+        <label class="field">
+          <span>单个 Markdown 媒体数</span>
+          <input id="media_count_limit" name="media_count_limit" type="number" min="0" value="350">
+        </label>
+
+        <div class="actions span-2">
+          <button class="primary-button" id="startBtn" type="submit">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+            启动任务
+          </button>
+          <button class="secondary-button" id="stopBtn" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+            停止
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <section class="run-panel" aria-labelledby="runTitle">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Runtime</p>
+          <h2 id="runTitle">运行看板</h2>
+        </div>
+      </div>
+
+      <div class="metric-grid">
+        <article class="metric">
+          <span>运行时长</span>
+          <strong id="runningFor">0s</strong>
+        </article>
+        <article class="metric">
+          <span>API 调用</span>
+          <strong id="apiCalls">0</strong>
+        </article>
+        <article class="metric">
+          <span>下载数量</span>
+          <strong id="downloads">0</strong>
+        </article>
+      </div>
+
+      <div class="output-box">
+        <div>
+          <span>输出目录</span>
+          <strong id="outputPath">-</strong>
+        </div>
+      </div>
+
+      <div class="log-card">
+        <div class="log-head">
+          <span>实时日志</span>
+          <button class="text-button" id="clearLog" type="button">清空显示</button>
+        </div>
+        <pre id="logBox" tabindex="0">等待任务启动...</pre>
+      </div>
+
+      <div class="notice">
+        <strong>使用边界</strong>
+        <p>本面板只在本机运行，目的是降低学习和演示门槛。请使用自己的账号信息，并遵守平台规则和内容版权。</p>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/assets/app.js"></script>
+</body>
+</html>

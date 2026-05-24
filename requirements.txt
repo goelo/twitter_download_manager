@@ -1,0 +1,9 @@
+httpx==0.28.1
+XClientTransaction==1.0.2
+requests==2.34.2
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+jinja2==3.1.5
+python-multipart==0.0.20
+itsdangerous==2.2.0
+playwright==1.49.1

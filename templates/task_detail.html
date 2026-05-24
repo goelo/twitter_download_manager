@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% set title = task.title %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1>{{ task.title }}</h1>
+    <p>#{{ task.id }} · {{ task.created_at }} · {{ task.username }}</p>
+  </div>
+  <div class="actions">
+    <a class="button" href="/tasks">返回</a>
+    <a class="button primary" href="/tasks/{{ task.id }}/download">打包下载</a>
+    {% if task.status in ["queued", "running"] %}
+      <form method="post" action="/tasks/{{ task.id }}/cancel">
+        <button type="submit" class="danger">取消</button>
+      </form>
+    {% endif %}
+  </div>
+</section>
+
+<section class="stats">
+  <div><span>状态</span><strong class="badge {{ status_class(task.status) }}">{{ task.status }}</strong></div>
+  <div><span>开始</span><strong>{{ task.started_at or "-" }}</strong></div>
+  <div><span>结束</span><strong>{{ task.finished_at or "-" }}</strong></div>
+  <div><span>错误</span><strong>{{ task.error or "-" }}</strong></div>
+</section>
+
+<section class="panel">
+  <h2>日志</h2>
+  <pre class="log">{{ log or "还没有日志" }}</pre>
+</section>
+
+<section class="panel">
+  <h2>文件</h2>
+  <table>
+    <thead><tr><th>文件</th><th>大小</th></tr></thead>
+    <tbody>
+      {% for file in files %}
+        <tr><td>{{ file.name }}</td><td>{{ file.size }} bytes</td></tr>
+      {% else %}
+        <tr><td colspan="2" class="empty">还没有输出文件</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
