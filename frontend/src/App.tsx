@@ -15,6 +15,8 @@ import { defaultRunTimeRange, defaultTaskTimeRange, presetFromTimeRange, rangeFr
 
 type BadgeTone = 'neutral' | 'success' | 'warning' | 'danger' | 'primary';
 
+const USABLE_ACCOUNT_STATUSES = new Set(['active', 'unknown', 'check_failed']);
+
 const DEFAULT_TASK_FORM: TaskFormValues = {
   task_type: 'user_media',
   account_id: 0,
@@ -68,7 +70,7 @@ const PROXY_PLACEHOLDER = 'gate.kookeey.info:1000:user:pass 或 socks5://user:pa
 function statusTone(status: string): BadgeTone {
   if (status === 'completed' || status === 'active' || status === 'finished') return 'success';
   if (status === 'running') return 'primary';
-  if (status === 'queued' || status === 'rate_limited' || status === 'partial_failed' || status === 'network_failed' || status === 'stopping' || status === 'disabled') return 'warning';
+  if (status === 'queued' || status === 'unknown' || status === 'check_failed' || status === 'rate_limited' || status === 'partial_failed' || status === 'network_failed' || status === 'stopping' || status === 'disabled') return 'warning';
   if (status === 'failed' || status === 'cancelled' || status === 'expired' || status === 'auth_expired' || status === 'target_unavailable' || status === 'api_changed') return 'danger';
   return 'neutral';
 }
@@ -88,6 +90,8 @@ function statusLabel(status: string) {
     target_unavailable: '目标不可用',
     api_changed: '接口变化',
     active: '正常',
+    unknown: '待确认',
+    check_failed: '检测异常',
     expired: '已失效',
     disabled: '已停用',
     idle: '空闲',
@@ -111,6 +115,8 @@ function statusDescription(status: string) {
     target_unavailable: '目标不可访问，或内容权限不足。',
     api_changed: '接口结构可能变化，需要排查。',
     active: '当前可用于任务。',
+    unknown: '检测接口无法确认状态，账号暂不禁用。',
+    check_failed: '检测请求异常，账号暂不禁用。',
     expired: '当前账号已失效。',
     disabled: '当前代理已停用。',
     idle: '当前没有运行中的任务。',
@@ -378,7 +384,7 @@ function DashboardPage() {
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="grid grid-cols-2 gap-2">
-              <InfoCard title="账号 active" value={String(health?.accounts?.active ?? 0)} />
+              <InfoCard title="账号可用" value={String((health?.accounts?.active ?? 0) + (health?.accounts?.unknown ?? 0) + (health?.accounts?.check_failed ?? 0))} />
               <InfoCard title="代理 active" value={String(health?.proxies?.active ?? 0)} />
             </div>
               <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2 text-sm">
@@ -685,6 +691,7 @@ function TaskFormPage() {
   const selectedTemplateId = searchParams.get('template');
   const accounts = accountData?.accounts;
   const proxies = proxiesData?.proxies || [];
+  const usableAccounts = accounts?.filter((account) => USABLE_ACCOUNT_STATUSES.has(account.status));
   const usableProxies = proxies.filter((proxy) => proxy.enabled && proxy.status === 'active');
   const [form, setForm] = useState<TaskFormValues>(DEFAULT_TASK_FORM);
   const [timePreset, setTimePreset] = useState<TimePreset>('90d');
@@ -703,11 +710,12 @@ function TaskFormPage() {
   });
 
   useEffect(() => {
-    const firstAccountId = accounts?.[0]?.id;
-    if (!form.account_id && firstAccountId) {
+    const firstAccountId = usableAccounts?.[0]?.id;
+    const selectedAccountUsable = usableAccounts?.some((account) => account.id === form.account_id);
+    if (firstAccountId && (!form.account_id || !selectedAccountUsable)) {
       setForm((prev) => ({ ...prev, account_id: firstAccountId }));
     }
-  }, [accounts, form.account_id]);
+  }, [usableAccounts, form.account_id]);
 
   useEffect(() => {
     const template = getTaskTemplateById(selectedTemplateId);
@@ -739,7 +747,7 @@ function TaskFormPage() {
         <p className="mt-1 text-sm text-[hsl(var(--muted))]">按任务类型填写对应字段，提交后自动进入队列。</p>
       </div>
       <ActionBar>
-        <Button onClick={() => create.mutate()} disabled={create.isPending || !accounts?.length || Boolean(timeError)}>
+        <Button onClick={() => create.mutate()} disabled={create.isPending || !usableAccounts?.length || Boolean(timeError)}>
           提交任务
         </Button>
         <Button variant="secondary" onClick={() => (window.location.href = '/tasks')}>
@@ -781,9 +789,9 @@ function TaskFormPage() {
             </Field>
             <Field label="X账号">
               <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.account_id} onChange={(e) => setForm((prev) => ({ ...prev, account_id: Number(e.target.value) }))}>
-                {(accounts || []).map((account: Account) => (
+                {(usableAccounts || []).map((account: Account) => (
                   <option key={account.id} value={account.id}>
-                    {account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}
+                    {account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}{account.status !== 'active' ? ` · ${statusLabel(account.status)}` : ''}
                   </option>
                 ))}
               </select>
@@ -1289,8 +1297,8 @@ function AccountsPage() {
         </Card>
       )}
       <div className="grid gap-3 md:grid-cols-3">
-        <InfoCard title="可用账号" value={String(accounts.filter((account) => account.status === 'active').length)} />
-        <InfoCard title="失效账号" value={String(accounts.filter((account) => account.status !== 'active').length)} />
+        <InfoCard title="可用账号" value={String(accounts.filter((account) => USABLE_ACCOUNT_STATUSES.has(account.status)).length)} />
+        <InfoCard title="待确认账号" value={String(accounts.filter((account) => account.status === 'unknown' || account.status === 'check_failed').length)} />
         <InfoCard title="最近检测" value={accounts[0]?.last_checked_at || '-'} />
       </div>
 
@@ -1388,7 +1396,7 @@ function AccountsPage() {
               </thead>
               <tbody>
                 {accounts.map((account) => (
-                  <tr key={account.id} className={cn('border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]', account.status !== 'active' && 'bg-[rgba(248,113,113,0.08)] text-[hsl(var(--muted))]')}>
+                  <tr key={account.id} className={cn('border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]', !USABLE_ACCOUNT_STATUSES.has(account.status) && 'bg-[rgba(248,113,113,0.08)] text-[hsl(var(--muted))]')}>
                     <td className="px-4 py-3">#{account.id}</td>
                     <td className="px-4 py-3 font-medium">{account.label}</td>
                     <td className="px-4 py-3">{account.screen_name ? `@${account.screen_name}` : '-'}</td>

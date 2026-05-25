@@ -147,6 +147,12 @@ health_state = {
     'last_error': None,
     'interval_seconds': HEALTH_CHECK_INTERVAL,
 }
+ACCOUNT_USABLE_STATUSES = ('active', 'unknown', 'check_failed')
+ACCOUNT_EXPIRED_STATUS = 'expired'
+ACCOUNT_UNKNOWN_STATUS = 'unknown'
+ACCOUNT_CHECK_FAILED_STATUS = 'check_failed'
+AUTH_FAILURE_STATUS_CODES = {401, 403}
+TRANSIENT_CHECK_STATUS_CODES = {404, 408, 409, 429, 500, 502, 503, 504}
 
 run_lock = threading.Lock()
 run_process = None
@@ -641,7 +647,8 @@ def run_snapshot():
 
 def active_accounts():
     with db() as conn:
-        return conn.execute("select * from accounts where status = 'active' order by id desc").fetchall()
+        placeholders = ','.join('?' for _ in ACCOUNT_USABLE_STATUSES)
+        return conn.execute(f"select * from accounts where status in ({placeholders}) order by id desc", tuple(ACCOUNT_USABLE_STATUSES)).fetchall()
 
 
 def active_proxies():
@@ -661,11 +668,27 @@ def validate_proxy(proxy_url):
         return False, '', str(exc)
 
 
+def account_health_status(ok, error=''):
+    if ok:
+        return 'active'
+    normalized = str(error or '').lower()
+    if '缺少 ct0' in normalized or '缺少 auth_token' in normalized:
+        return ACCOUNT_EXPIRED_STATUS
+    if any(f'http {code}' in normalized for code in AUTH_FAILURE_STATUS_CODES):
+        return 'auth_expired'
+    if any(f'http {code}' in normalized for code in TRANSIENT_CHECK_STATUS_CODES):
+        return ACCOUNT_UNKNOWN_STATUS
+    if any(term in normalized for term in ['timeout', 'timed out', 'connection', 'network', 'temporarily', 'rate limit']):
+        return ACCOUNT_CHECK_FAILED_STATUS
+    return ACCOUNT_CHECK_FAILED_STATUS
+
+
 def update_account_health(account_id, ok, screen_name=None, error=''):
+    status = account_health_status(ok, error)
     with db() as conn:
         conn.execute(
             'update accounts set status = ?, screen_name = coalesce(?, screen_name), last_checked_at = ?, last_error = ? where id = ?',
-            ('active' if ok else 'expired', screen_name, now(), None if ok else redact_sensitive(error), account_id),
+            (status, screen_name, now(), None if ok else redact_sensitive(error), account_id),
         )
         return conn.execute('select * from accounts where id = ?', (account_id,)).fetchone()
 
@@ -699,9 +722,13 @@ def check_proxy_row(proxy):
 
 def get_active_account_or_error(account_id):
     with db() as conn:
-        account = conn.execute("select * from accounts where id = ? and status = 'active'", (account_id,)).fetchone()
+        placeholders = ','.join('?' for _ in ACCOUNT_USABLE_STATUSES)
+        account = conn.execute(
+            f"select * from accounts where id = ? and status in ({placeholders})",
+            (account_id, *ACCOUNT_USABLE_STATUSES),
+        ).fetchone()
     if not account:
-        raise HTTPException(status_code=400, detail='X 账号不可用，请先到账号页重新检测或登录。')
+        raise HTTPException(status_code=400, detail='X 账号会话失效，请重新登录或更新 Cookie。')
     return account
 
 
@@ -841,6 +868,8 @@ def extract_ct0(cookie):
 
 def validate_account_cookie(cookie):
     ct0 = extract_ct0(cookie)
+    if 'auth_token=' not in str(cookie or ''):
+        return False, None, '缺少 auth_token'
     if not ct0:
         return False, None, '缺少 ct0'
     headers = {
@@ -1161,7 +1190,8 @@ def run_health_check_once():
         health_state['last_error'] = None
     try:
         with db() as conn:
-            accounts = conn.execute("select * from accounts where status = 'active' order by id desc").fetchall()
+            placeholders = ','.join('?' for _ in ACCOUNT_USABLE_STATUSES)
+            accounts = conn.execute(f"select * from accounts where status in ({placeholders}) order by id desc", tuple(ACCOUNT_USABLE_STATUSES)).fetchall()
             proxies = conn.execute("select * from proxies where enabled = 1 order by id desc").fetchall()
         for account in accounts:
             check_account_row(account)
@@ -1237,7 +1267,11 @@ def run_task(task):
     account_path = output_dir / 'account_session.json'
 
     with db() as conn:
-        account = conn.execute("select * from accounts where id = ? and status = 'active'", (task['account_id'],)).fetchone()
+        placeholders = ','.join('?' for _ in ACCOUNT_USABLE_STATUSES)
+        account = conn.execute(
+            f"select * from accounts where id = ? and status in ({placeholders})",
+            (task['account_id'], *ACCOUNT_USABLE_STATUSES),
+        ).fetchone()
     if not account:
         with db() as conn:
             conn.execute(
