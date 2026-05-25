@@ -1405,6 +1405,7 @@ function ProxyPage() {
 
 function RunControlPage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const { data: configData } = useQuery({ queryKey: ['run-config'], queryFn: () => api.runConfig() });
   const { data: statusData } = useQuery({ queryKey: ['run-status'], queryFn: () => api.runStatus(), refetchInterval: 2000 });
   const { data: proxiesData } = useQuery({ queryKey: ['proxies'], queryFn: () => api.proxies(), refetchInterval: 8000 });
@@ -1515,36 +1516,19 @@ function RunControlPage() {
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <Zap className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
-              <h3 className="font-semibold">快速预设</h3>
+              <h3 className="font-semibold">快捷模板</h3>
             </div>
-            <div className="text-sm text-[hsl(var(--muted))]">点击即可填入运行参数</div>
+            <div className="text-sm text-[hsl(var(--muted))]">点击后进入新建任务并填入参数</div>
           </div>
         </CardHeader>
         <CardContent>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             {taskTemplates.map((template) => (
-              <button
+              <TemplateCard
                 key={template.id}
-                type="button"
-                className="group flex min-h-36 flex-col justify-between rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,rgba(30,41,59,0.88)_0%,rgba(15,23,42,0.9)_100%)] p-4 text-left transition-all duration-200 hover:-translate-y-[2px] hover:border-[hsl(var(--primary))] hover:shadow-[0_16px_34px_rgba(14,165,233,0.14)]"
-                onClick={() => {
-                  setForm((prev) => ({ ...DEFAULT_RUN_FORM, ...prev, ...template.runPayload, cookie: prev.cookie || '', save_path: prev.save_path || '' }));
-                  setTimePreset(presetFromTimeRange(template.runPayload.time_range || DEFAULT_RUN_FORM.time_range));
-                  setPreflightErrors([]);
-                }}
-              >
-                <div>
-                  <div className="text-base font-semibold">{template.name}</div>
-                  <p className="mt-2 text-sm text-[hsl(var(--muted))]">{template.description}</p>
-                </div>
-                <div className="mt-4 flex items-center justify-between">
-                  <Badge tone="primary">{template.task_type}</Badge>
-                  <span className="inline-flex items-center gap-1 text-sm font-semibold text-[hsl(var(--primary-dark))]">
-                    套用
-                    <ArrowRight className="h-4 w-4" />
-                  </span>
-                </div>
-              </button>
+                template={template}
+                onClick={() => navigate(`/tasks/new?template=${encodeURIComponent(template.id)}`)}
+              />
             ))}
           </div>
         </CardContent>
