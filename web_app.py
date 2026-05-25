@@ -978,18 +978,21 @@ async def close_browser_login_session():
 
 async def browser_login_payload(session):
     if not session:
-        return {'status': 'idle', 'message': '还没有启动浏览器登录'}
+        return {'status': 'idle', 'message': '还没有启动浏览器登录', 'mode': None}
 
     if time.time() > session['expires_at']:
+        mode = session.get('mode')
         await close_browser_login_session()
-        return {'status': 'expired', 'message': '浏览器登录已超时，请重新开始'}
+        return {'status': 'expired', 'message': '浏览器登录已超时，请重新开始', 'mode': mode}
 
     if session.get('error'):
         message = session['error']
+        mode = session.get('mode')
         await close_browser_login_session()
-        return {'status': 'failed', 'message': message}
+        return {'status': 'failed', 'message': message, 'mode': mode}
 
     context = session['context']
+    mode = session.get('mode') or 'remote'
     try:
         cookies = await context.cookies('https://x.com')
         data = {c['name']: c['value'] for c in cookies}
@@ -1001,15 +1004,16 @@ async def browser_login_payload(session):
             if ok:
                 save_account(screen_name or 'Browser Login', auth_token, ct0, screen_name)
                 await close_browser_login_session()
-                return {'status': 'completed', 'message': '登录成功，账号已保存', 'screen_name': screen_name}
+                return {'status': 'completed', 'message': '登录成功，账号已保存', 'screen_name': screen_name, 'mode': mode}
             session['message'] = f'检测到 Cookie，但账号校验失败：{redact_sensitive(error)}'
     except Exception as exc:
         session['message'] = f'检查登录状态失败：{redact_sensitive(str(exc))}'
 
     return {
         'status': 'running',
-        'message': session.get('message') or '请在远程浏览器中完成 X 登录',
+        'message': session.get('message') or ('请在弹出的本机浏览器中完成 X 登录' if mode == 'local' else '请在远程浏览器中完成 X 登录'),
         'expires_in': max(0, int(session['expires_at'] - time.time())),
+        'mode': mode,
     }
 
 
@@ -1028,22 +1032,53 @@ async def ensure_browser_login_session():
         playwright = None
         try:
             playwright = await async_playwright().start()
-            profile_dir = DATA_DIR / 'playwright-x-profile'
-            profile_dir.mkdir(parents=True, exist_ok=True)
-            context = await playwright.chromium.launch_persistent_context(
-                str(profile_dir),
-                headless=True,
-                viewport={'width': 1280, 'height': 820},
-            )
+            mode = browser_login_preferred_mode()
+            if mode == 'local':
+                try:
+                    profile_dir = DATA_DIR / 'playwright-x-local-profile'
+                    profile_dir.mkdir(parents=True, exist_ok=True)
+                    chrome_path = local_chrome_executable()
+                    launch_options = {
+                        'headless': False,
+                        'viewport': {'width': 1280, 'height': 820},
+                        'args': ['--new-window'],
+                    }
+                    if chrome_path:
+                        launch_options['executable_path'] = chrome_path
+                    context = await playwright.chromium.launch_persistent_context(str(profile_dir), **launch_options)
+                    mode_message = '已打开本机浏览器，请在弹出的窗口完成 X 登录'
+                except Exception as exc:
+                    if os.environ.get('TW_WEB_BROWSER_LOGIN_MODE', '').strip().lower() == 'local':
+                        raise
+                    try:
+                        await playwright.stop()
+                    except Exception:
+                        pass
+                    playwright = await async_playwright().start()
+                    mode = 'remote'
+                    session_error = redact_sensitive(str(exc))
+            if mode == 'remote':
+                profile_dir = DATA_DIR / 'playwright-x-profile'
+                profile_dir.mkdir(parents=True, exist_ok=True)
+                context = await playwright.chromium.launch_persistent_context(
+                    str(profile_dir),
+                    headless=True,
+                    viewport={'width': 1280, 'height': 820},
+                )
+                if 'session_error' in locals():
+                    mode_message = f'本机浏览器启动失败，已切换到远程登录：{session_error}'
+                else:
+                    mode_message = '请在远程浏览器中完成 X 登录'
             page = context.pages[0] if context.pages else await context.new_page()
             await page.goto('https://x.com/i/flow/login', wait_until='domcontentloaded')
             browser_login_session = {
                 'playwright': playwright,
                 'context': context,
                 'page': page,
+                'mode': mode,
                 'started_at': time.time(),
                 'expires_at': time.time() + BROWSER_LOGIN_TIMEOUT_SECONDS,
-                'message': '请在远程浏览器中完成 X 登录',
+                'message': mode_message,
             }
             return await browser_login_payload(browser_login_session)
         except HTTPException:

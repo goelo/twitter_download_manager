@@ -1096,6 +1096,7 @@ function AccountsPage() {
   const [browserLoginOpen, setBrowserLoginOpen] = useState(false);
   const [browserLoginStatus, setBrowserLoginStatus] = useState('');
   const [browserLoginMessage, setBrowserLoginMessage] = useState('');
+  const [browserLoginMode, setBrowserLoginMode] = useState<'local' | 'remote' | null>(null);
   const [browserInput, setBrowserInput] = useState('');
   const [screenshotVersion, setScreenshotVersion] = useState(0);
   const addAccount = useMutation({
@@ -1129,7 +1130,10 @@ function AccountsPage() {
       setBrowserLoginOpen(true);
       setBrowserLoginStatus(res.status);
       setBrowserLoginMessage(res.message);
-      setScreenshotVersion((prev) => prev + 1);
+      setBrowserLoginMode(res.mode || 'remote');
+      if ((res.mode || 'remote') === 'remote') {
+        setScreenshotVersion((prev) => prev + 1);
+      }
     },
     onError: (err: Error) => setError(err.message),
   });
@@ -1154,6 +1158,7 @@ function AccountsPage() {
       setBrowserLoginOpen(false);
       setBrowserLoginStatus('');
       setBrowserLoginMessage('');
+      setBrowserLoginMode(null);
     },
     onError: (err: Error) => setError(err.message),
   });
@@ -1179,11 +1184,12 @@ function AccountsPage() {
     if (!status) return;
     setBrowserLoginStatus(status);
     setBrowserLoginMessage(browserLoginStatusQuery.data?.message || '');
+    setBrowserLoginMode(browserLoginStatusQuery.data?.mode || null);
     if (status === 'completed') {
       setBrowserLoginOpen(false);
       queryClient.invalidateQueries({ queryKey: ['accounts'] });
     }
-    if (status === 'running') {
+    if (status === 'running' && browserLoginStatusQuery.data?.mode !== 'local') {
       setScreenshotVersion((prev) => prev + 1);
     }
   }, [browserLoginStatusQuery.data, queryClient]);
@@ -1232,39 +1238,56 @@ function AccountsPage() {
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="overflow-auto rounded-lg border border-[hsl(var(--line))] bg-[#020617]">
-              <img
-                src={`/api/accounts/browser-login/screenshot?v=${screenshotVersion}`}
-                alt="远程浏览器登录画面"
-                className="mx-auto max-h-[620px] cursor-crosshair"
-                onClick={clickRemoteBrowser}
-              />
-            </div>
-            <div className="grid gap-2 md:grid-cols-[1fr_auto]">
-              <Input
-                value={browserInput}
-                onChange={(event) => setBrowserInput(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    typeRemoteText();
-                  }
-                }}
-                placeholder="输入后点击发送到远程浏览器"
-              />
-              <Button onClick={typeRemoteText} disabled={sendBrowserInput.isPending || !browserInput}>
-                发送输入
-              </Button>
-            </div>
+            {browserLoginMode === 'local' ? (
+              <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-4 py-3 text-sm text-[hsl(var(--muted))]">
+                已在本机打开浏览器窗口。请在弹出的 Chrome/Chromium 中完成 X 登录，系统会自动检测 Cookie 并保存账号。
+              </div>
+            ) : (
+              <>
+                <div className="overflow-auto rounded-lg border border-[hsl(var(--line))] bg-[#020617]">
+                  <img
+                    src={`/api/accounts/browser-login/screenshot?v=${screenshotVersion}`}
+                    alt="远程浏览器登录画面"
+                    className="mx-auto max-h-[620px] cursor-crosshair"
+                    onClick={clickRemoteBrowser}
+                  />
+                </div>
+                <div className="grid gap-2 md:grid-cols-[1fr_auto]">
+                  <Input
+                    value={browserInput}
+                    onChange={(event) => setBrowserInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        typeRemoteText();
+                      }
+                    }}
+                    placeholder="输入后点击发送到远程浏览器"
+                  />
+                  <Button onClick={typeRemoteText} disabled={sendBrowserInput.isPending || !browserInput}>
+                    发送输入
+                  </Button>
+                </div>
+              </>
+            )}
             <div className="flex flex-wrap gap-2">
-              {['Enter', 'Tab', 'Backspace', 'Escape'].map((key) => (
-                <Button key={key} variant="secondary" size="sm" onClick={() => sendBrowserInput.mutate({ action: 'press', key })}>
-                  {key}
+              {browserLoginMode !== 'local' && (
+                <>
+                  {['Enter', 'Tab', 'Backspace', 'Escape'].map((key) => (
+                    <Button key={key} variant="secondary" size="sm" onClick={() => sendBrowserInput.mutate({ action: 'press', key })}>
+                      {key}
+                    </Button>
+                  ))}
+                  <Button variant="secondary" size="sm" onClick={() => sendBrowserInput.mutate({ action: 'reload' })}>
+                    刷新页面
+                  </Button>
+                </>
+              )}
+              {browserLoginMode === 'local' && (
+                <Button variant="secondary" size="sm" onClick={() => browserLoginStatusQuery.refetch()}>
+                  检查登录状态
                 </Button>
-              ))}
-              <Button variant="secondary" size="sm" onClick={() => sendBrowserInput.mutate({ action: 'reload' })}>
-                刷新页面
-              </Button>
+              )}
               <Button variant="danger" size="sm" onClick={() => cancelBrowserLogin.mutate()}>
                 取消登录
               </Button>

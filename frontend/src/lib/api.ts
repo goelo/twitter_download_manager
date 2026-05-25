@@ -1,5 +1,15 @@
 import type { Account, ApiError, BitBrowserImportResponse, Dashboard, HealthStatus, ProxyItem, RunConfig, RunStatus, Task } from './types';
 
+export type BrowserLoginMode = 'local' | 'remote' | null;
+
+export type BrowserLoginResponse = {
+  status: string;
+  message: string;
+  mode?: BrowserLoginMode;
+  expires_in?: number;
+  screen_name?: string;
+};
+
 async function request<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
   const response = await fetch(input, {
     credentials: 'include',
@@ -37,8 +47,8 @@ export const api = {
   accounts: () => request<{ accounts: Account[] }>('/api/accounts'),
   addAccount: (payload: Record<string, unknown>) => request<{ ok: boolean }>('/api/accounts/manual', { method: 'POST', body: JSON.stringify(payload) }),
   importBitBrowserAccounts: (payload: { base_url: string; browser_ids: string[] }) => request<BitBrowserImportResponse>('/api/accounts/import/bitbrowser', { method: 'POST', body: JSON.stringify(payload) }),
-  browserLogin: () => request<{ status: string; message: string; expires_in?: number; screen_name?: string }>('/api/accounts/browser-login/start', { method: 'POST' }),
-  browserLoginStatus: () => request<{ status: string; message: string; expires_in?: number; screen_name?: string }>('/api/accounts/browser-login/status'),
+  browserLogin: () => request<BrowserLoginResponse>('/api/accounts/browser-login/start', { method: 'POST' }),
+  browserLoginStatus: () => request<BrowserLoginResponse>('/api/accounts/browser-login/status'),
   browserLoginInput: (payload: Record<string, unknown>) => request<{ ok: boolean }>('/api/accounts/browser-login/input', { method: 'POST', body: JSON.stringify(payload) }),
   browserLoginCancel: () => request<{ ok: boolean }>('/api/accounts/browser-login/cancel', { method: 'POST' }),
   checkAccount: (id: number) => request<{ account: Account; ok: boolean; error: string }>(`/api/accounts/${id}/check`, { method: 'POST' }),
