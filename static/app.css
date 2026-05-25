@@ -242,7 +242,7 @@ input, select, textarea {
   border-radius: 6px;
   padding: 8px 10px;
   color: var(--text);
-  background: #f8fafc;
+  background: rgba(15, 23, 42, 0.84);
   font: inherit;
 }
 
@@ -292,7 +292,7 @@ textarea {
 }
 
 .stats div {
-  background: #f8fafc;
+  background: var(--panel-soft);
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 14px;
@@ -325,7 +325,7 @@ textarea {
 
 .login-panel {
   width: min(420px, 100%);
-  background: #f8fafc;
+  background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 26px;

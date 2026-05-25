@@ -1,16 +1,16 @@
 :root {
-  color-scheme: light;
-  --bg: #dfe6ef;
-  --panel: #ffffff;
-  --panel-soft: #edf2f7;
-  --text: #172033;
-  --muted: #4b5b70;
-  --line: #b9c5d3;
-  --primary: #0e74be;
-  --primary-dark: #1d4ed8;
-  --accent: #ea580c;
-  --danger: #b42318;
-  --shadow: 0 18px 45px rgba(20, 34, 52, 0.14);
+  color-scheme: dark;
+  --bg: #07111f;
+  --panel: rgba(15, 23, 42, 0.88);
+  --panel-soft: rgba(30, 41, 59, 0.72);
+  --text: #f1f5f9;
+  --muted: #aebbd0;
+  --line: #27364d;
+  --primary: #38bdf8;
+  --primary-dark: #93c5fd;
+  --accent: #f97316;
+  --danger: #f87171;
+  --shadow: 0 18px 45px rgba(2, 8, 23, 0.36);
 }
 
 * {
@@ -20,7 +20,10 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: linear-gradient(180deg, #eff5fb 0%, var(--bg) 52%, #dbe3ec 100%);
+  background:
+    radial-gradient(circle at 18% 0%, rgba(14, 165, 233, 0.18) 0, rgba(14, 165, 233, 0) 32rem),
+    radial-gradient(circle at 86% 8%, rgba(37, 99, 235, 0.16) 0, rgba(37, 99, 235, 0) 30rem),
+    linear-gradient(180deg, #0b1628 0%, var(--bg) 48%, #050b16 100%);
   color: var(--text);
   font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
   font-size: 16px;
@@ -79,7 +82,7 @@ h2 {
   padding: 0 16px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(248, 250, 252, 0.9);
+  background: rgba(15, 23, 42, 0.78);
   color: var(--muted);
   font-weight: 700;
 }
@@ -88,7 +91,7 @@ h2 {
   width: 10px;
   height: 10px;
   border-radius: 999px;
-  background: #94a3b8;
+  background: #64748b;
 }
 
 .status-pill.running .dot,
@@ -161,7 +164,7 @@ select {
   min-height: 44px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #fff;
+  background: rgba(15, 23, 42, 0.84);
   color: var(--text);
   padding: 10px 12px;
   outline: none;
@@ -179,7 +182,7 @@ select:focus-visible,
 button:focus-visible,
 pre:focus-visible {
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(14, 116, 190, 0.18);
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.22);
 }
 
 .switch-grid {
@@ -232,7 +235,7 @@ pre:focus-visible {
 .primary-button {
   flex: 1;
   background: var(--accent);
-  color: #fff;
+  color: #111827;
   font-weight: 800;
   padding: 0 18px;
 }
@@ -242,20 +245,20 @@ pre:focus-visible {
 }
 
 .secondary-button {
-  background: #fff;
+  background: rgba(15, 23, 42, 0.78);
   color: var(--danger);
-  border-color: #f0b7af;
+  border-color: rgba(248, 113, 113, 0.34);
   font-weight: 800;
   padding: 0 18px;
 }
 
 .secondary-button:hover {
-  background: #fff5f3;
+  background: rgba(248, 113, 113, 0.12);
 }
 
 .icon-button {
   width: 44px;
-  background: #fff;
+  background: rgba(15, 23, 42, 0.78);
   border-color: var(--line);
   color: var(--primary-dark);
 }
@@ -331,10 +334,10 @@ svg {
 
 .log-card {
   margin-top: 14px;
-  border: 1px solid #1e3a8a;
+  border: 1px solid var(--line);
   border-radius: 8px;
   overflow: hidden;
-  background: #0f172a;
+  background: #020617;
 }
 
 .log-head {
@@ -383,8 +386,8 @@ pre {
   max-width: min(420px, calc(100vw - 40px));
   padding: 12px 14px;
   border-radius: 8px;
-  background: #172033;
-  color: #fff;
+  background: #0f172a;
+  color: var(--text);
   box-shadow: var(--shadow);
   opacity: 0;
   pointer-events: none;
