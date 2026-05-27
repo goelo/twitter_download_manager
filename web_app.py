@@ -84,20 +84,23 @@ browser_login_session = None
 LOCAL_BROWSER_LOGIN_TIMEOUT_SECONDS = 300
 local_browser_login_sessions = {}
 local_browser_login_lock = threading.Lock()
-ACCOUNT_NEW_TASK_LIMIT_24H = 3
-ACCOUNT_STABLE_TASK_LIMIT_24H = 20
-ACCOUNT_MIN_INTERVAL_SECONDS = 10 * 60
-ACCOUNT_NEW_MIN_INTERVAL_SECONDS = 30 * 60
-ACCOUNT_RATE_LIMIT_COOLDOWN_SECONDS = 6 * 60 * 60
-ACCOUNT_TRANSIENT_COOLDOWN_SECONDS = 30 * 60
-PROXY_MIN_INTERVAL_SECONDS = 3 * 60
-PROXY_FAILURE_COOLDOWN_SECONDS = 30 * 60
-PROXY_RATE_LIMIT_COOLDOWN_SECONDS = 2 * 60 * 60
+ACCOUNT_NEW_TASK_LIMIT_24H = max(1, int(os.environ.get('TW_ACCOUNT_NEW_TASK_LIMIT_24H', '3') or 3))
+ACCOUNT_STABLE_TASK_LIMIT_24H = max(1, int(os.environ.get('TW_ACCOUNT_STABLE_TASK_LIMIT_24H', '20') or 20))
+ACCOUNT_MIN_INTERVAL_SECONDS = max(0, int(os.environ.get('TW_ACCOUNT_MIN_INTERVAL_SECONDS', str(10 * 60)) or 0))
+ACCOUNT_NEW_MIN_INTERVAL_SECONDS = max(0, int(os.environ.get('TW_ACCOUNT_NEW_MIN_INTERVAL_SECONDS', str(30 * 60)) or 0))
+ACCOUNT_RATE_LIMIT_COOLDOWN_SECONDS = max(0, int(os.environ.get('TW_ACCOUNT_RATE_LIMIT_COOLDOWN_SECONDS', str(6 * 60 * 60)) or 0))
+ACCOUNT_TRANSIENT_COOLDOWN_SECONDS = max(0, int(os.environ.get('TW_ACCOUNT_TRANSIENT_COOLDOWN_SECONDS', str(30 * 60)) or 0))
+PROXY_MIN_INTERVAL_SECONDS = max(0, int(os.environ.get('TW_PROXY_MIN_INTERVAL_SECONDS', str(3 * 60)) or 0))
+PROXY_FAILURE_COOLDOWN_SECONDS = max(0, int(os.environ.get('TW_PROXY_FAILURE_COOLDOWN_SECONDS', str(30 * 60)) or 0))
+PROXY_RATE_LIMIT_COOLDOWN_SECONDS = max(0, int(os.environ.get('TW_PROXY_RATE_LIMIT_COOLDOWN_SECONDS', str(2 * 60 * 60)) or 0))
 SERVER_TIMEZONE = os.environ.get('TW_WEB_TIMEZONE', time.tzname[0] if time.tzname else 'local')
 OPERATION_LOG_RETENTION_DAYS = max(1, int(os.environ.get('TW_OPERATION_LOG_RETENTION_DAYS', '90') or 90))
 SCHEDULE_FAILURE_DISABLE_THRESHOLD = max(1, int(os.environ.get('TW_SCHEDULE_FAILURE_DISABLE_THRESHOLD', '3') or 3))
 SCHEDULE_MISSED_RUN_POLICY = 'skip'
 SCHEDULE_FAILURE_POLICY = 'disable_after_3_failures'
+HEATMAP_DAY_OPTIONS = {1, 7, 30}
+HEATMAP_DEFAULT_DAYS = 7
+HEATMAP_ITEM_LIMIT = 50
 
 
 def browser_login_available():
@@ -168,6 +171,7 @@ TASK_LEASE_TIMEOUT_SECONDS = max(60, int(os.environ.get('TW_TASK_LEASE_TIMEOUT_S
 TASK_HEARTBEAT_SECONDS = max(5, int(os.environ.get('TW_TASK_HEARTBEAT_SECONDS', '15') or 15))
 ACCOUNT_API_INTERVAL_SECONDS = float(os.environ.get('TW_ACCOUNT_API_INTERVAL_SECONDS', '2') or 2)
 PROXY_API_INTERVAL_SECONDS = float(os.environ.get('TW_PROXY_API_INTERVAL_SECONDS', '0.5') or 0.5)
+MEDIA_DOWNLOAD_INTERVAL_SECONDS = float(os.environ.get('TW_MEDIA_DOWNLOAD_INTERVAL_SECONDS', '0') or 0)
 CRAWLER_REQUEST_RETRIES = max(1, int(os.environ.get('TW_CRAWLER_REQUEST_RETRIES', '3') or 3))
 CREDENTIAL_KEY = os.environ.get('TW_WEB_CREDENTIAL_KEY', '').strip()
 RESULT_DB_TYPES = {'postgresql', 'mysql'}
@@ -387,6 +391,7 @@ def migration_scheduler_and_logs(conn):
     ensure_column(conn, 'scheduled_tasks', 'failure_policy', "text not null default 'disable_after_3_failures'")
     ensure_column(conn, 'scheduled_tasks', 'consecutive_failures', 'integer not null default 0')
     ensure_column(conn, 'scheduled_tasks', 'last_error', 'text')
+    ensure_column(conn, 'scheduled_tasks', 'locked_at', 'text')
     ensure_column(conn, 'operation_logs', 'task_id', 'integer')
     ensure_column(conn, 'operation_logs', 'schedule_id', 'integer')
     ensure_column(conn, 'operation_logs', 'error_type', 'text')
@@ -609,12 +614,19 @@ def init_db():
         ensure_column(conn, 'tasks', 'api_calls', 'integer not null default 0')
         ensure_column(conn, 'tasks', 'download_count', 'integer not null default 0')
         ensure_column(conn, 'scheduled_tasks', 'proxy_id', 'integer')
+        ensure_column(conn, 'scheduled_tasks', 'timezone', "text not null default 'local'")
+        ensure_column(conn, 'scheduled_tasks', 'missed_run_policy', "text not null default 'skip'")
+        ensure_column(conn, 'scheduled_tasks', 'failure_policy', "text not null default 'disable_after_3_failures'")
+        ensure_column(conn, 'scheduled_tasks', 'consecutive_failures', 'integer not null default 0')
+        ensure_column(conn, 'scheduled_tasks', 'last_error', 'text')
+        ensure_column(conn, 'scheduled_tasks', 'locked_at', 'text')
         conn.execute('create index if not exists idx_tasks_queue on tasks(status, last_retry_at, id)')
         conn.execute('create index if not exists idx_tasks_lease on tasks(status, heartbeat_at)')
         conn.execute('create index if not exists idx_task_items_task on task_items(task_id)')
         conn.execute('create index if not exists idx_media_assets_task on media_assets(task_id)')
         conn.execute('create index if not exists idx_media_assets_url on media_assets(media_url)')
         ensure_column(conn, 'result_db_configs', 'last_synced_at', 'text')
+    apply_schema_migrations()
 
 
 def ensure_column(conn, table, column, definition):
@@ -977,6 +989,13 @@ def append_operation_log(level, event_type, message, task_id=None, schedule_id=N
                 json.dumps(safe_details(details), ensure_ascii=False),
             ),
         )
+
+
+def cleanup_operation_logs():
+    cutoff = (datetime.now() - timedelta(days=OPERATION_LOG_RETENTION_DAYS)).strftime('%Y-%m-%d %H:%M:%S')
+    with db() as conn:
+        cursor = conn.execute('delete from operation_logs where created_at < ?', (cutoff,))
+    return cursor.rowcount
 
 
 def operation_log_payload(row):
@@ -1435,6 +1454,41 @@ def heatmap_dates(days=7):
     return [today - timedelta(days=offset) for offset in range(days - 1, -1, -1)]
 
 
+def normalize_heatmap_days(value):
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        return HEATMAP_DEFAULT_DAYS
+    if days not in HEATMAP_DAY_OPTIONS:
+        return HEATMAP_DEFAULT_DAYS
+    return days
+
+
+def normalize_heatmap_hour(value):
+    try:
+        hour = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail='小时需要在 0 到 23 之间')
+    if hour < 0 or hour > 23:
+        raise HTTPException(status_code=400, detail='小时需要在 0 到 23 之间')
+    return hour
+
+
+def normalize_heatmap_date(value):
+    try:
+        return datetime.strptime(str(value or ''), '%Y-%m-%d').date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail='日期格式应为 YYYY-MM-DD')
+
+
+def normalize_limit(value, default=HEATMAP_ITEM_LIMIT, maximum=HEATMAP_ITEM_LIMIT):
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        limit = default
+    return max(1, min(limit, maximum))
+
+
 def build_heatmap_from_datetimes(records, days=7, source='local'):
     dates = heatmap_dates(days)
     date_keys = [date.strftime('%Y-%m-%d') for date in dates]
@@ -1481,18 +1535,50 @@ def build_heatmap_from_datetimes(records, days=7, source='local'):
     }
 
 
-def local_result_heatmap(days=7):
+def heatmap_task_filter(user, table_alias='tasks'):
+    if not user or user['role'] == 'admin':
+        return '', []
+    return f'and {table_alias}.user_id = ?', [user['id']]
+
+
+def external_task_filter(user):
+    if not user or user['role'] == 'admin':
+        return '', {}
+    with db() as conn:
+        rows = conn.execute('select id from tasks where user_id = ?', (user['id'],)).fetchall()
+    task_ids = [row['id'] for row in rows]
+    if not task_ids:
+        return 'and 1 = 0', {}
+    params = {f'task_id_{index}': task_id for index, task_id in enumerate(task_ids)}
+    placeholders = ', '.join(f':{name}' for name in params)
+    return f'and task_id in ({placeholders})', params
+
+
+def task_title_map(task_ids):
+    clean_ids = sorted({int(task_id) for task_id in task_ids if task_id is not None})
+    if not clean_ids:
+        return {}
+    placeholders = ', '.join('?' for _ in clean_ids)
+    with db() as conn:
+        rows = conn.execute(f'select id, title, task_type from tasks where id in ({placeholders})', clean_ids).fetchall()
+    return {row['id']: {'title': row['title'], 'task_type': row['task_type']} for row in rows}
+
+
+def local_result_heatmap(days=7, user=None):
     records = []
     start = datetime.combine(heatmap_dates(days)[0], datetime.min.time())
+    user_filter, user_params = heatmap_task_filter(user)
     with db() as conn:
         rows = conn.execute(
-            '''
-            select task_id, coalesce(tweet_date, created_at) as activity_at, media_count
+            f'''
+            select task_items.task_id, coalesce(task_items.tweet_date, task_items.created_at) as activity_at, task_items.media_count
             from task_items
-            where datetime(created_at) >= datetime(?)
-               or datetime(tweet_date) >= datetime(?)
+            join tasks on tasks.id = task_items.task_id
+            where (datetime(task_items.created_at) >= datetime(?)
+               or datetime(task_items.tweet_date) >= datetime(?))
+              {user_filter}
             ''',
-            (start.strftime('%Y-%m-%d %H:%M:%S'), start.strftime('%Y-%m-%d %H:%M:%S')),
+            [start.strftime('%Y-%m-%d %H:%M:%S'), start.strftime('%Y-%m-%d %H:%M:%S'), *user_params],
         ).fetchall()
     for row in rows:
         records.append({
@@ -1503,33 +1589,166 @@ def local_result_heatmap(days=7):
     return build_heatmap_from_datetimes(records, days=days, source='local')
 
 
-def external_result_heatmap(config, days=7):
+def external_result_heatmap(config, days=7, user=None):
     start = datetime.combine(heatmap_dates(days)[0], datetime.min.time())
     engine = result_db_engine(config)
     ensure_result_db_schema(engine)
+    user_filter, user_params = external_task_filter(user)
     with engine.connect() as conn:
         rows = conn.execute(
             text(
-                '''
+                f'''
                 select task_id, coalesce(tweet_date, created_at) as activity_at, media_count
                 from tw_result_items
-                where created_at >= :start_at or tweet_date >= :start_at
+                where (created_at >= :start_at or tweet_date >= :start_at)
+                  {user_filter}
                 '''
             ),
-            {'start_at': start},
+            {'start_at': start, **user_params},
         ).mappings().all()
     records = [{'dt': normalize_ts(row['activity_at']) if not isinstance(row['activity_at'], datetime) else row['activity_at'], 'task_id': row['task_id'], 'media_count': row['media_count']} for row in rows]
     return build_heatmap_from_datetimes(records, days=days, source='external')
 
 
-def dashboard_heatmap(days=7):
+def dashboard_heatmap(days=7, user=None):
+    days = normalize_heatmap_days(days)
     config = get_enabled_result_db()
     if config:
         try:
-            return external_result_heatmap(config, days=days)
+            return external_result_heatmap(config, days=days, user=user)
         except Exception as exc:
             append_operation_log('warning', 'result_db_heatmap_fallback', f'外部结果库热力图读取失败，已回退本地数据: {redact_sensitive(str(exc))}', error_type='result_db_heatmap_failed')
-    return local_result_heatmap(days=days)
+    return local_result_heatmap(days=days, user=user)
+
+
+def heatmap_item_payload(row, source='local'):
+    activity_at = row['activity_at']
+    if isinstance(activity_at, datetime):
+        activity_at = activity_at.strftime('%Y-%m-%d %H:%M:%S')
+    return {
+        'source': source,
+        'task_id': row['task_id'],
+        'task_title': row['task_title'] if 'task_title' in row.keys() else None,
+        'task_type': row['task_type'] if 'task_type' in row.keys() else None,
+        'activity_at': activity_at,
+        'tweet_url': row['tweet_url'],
+        'display_name': row['display_name'],
+        'screen_name': row['screen_name'],
+        'content': row['content'],
+        'favorite_count': int(row['favorite_count'] or 0),
+        'retweet_count': int(row['retweet_count'] or 0),
+        'reply_count': int(row['reply_count'] or 0),
+        'media_count': int(row['media_count'] or 0),
+    }
+
+
+def local_heatmap_items(user, date_value, hour_value, limit=HEATMAP_ITEM_LIMIT):
+    day = normalize_heatmap_date(date_value)
+    hour = normalize_heatmap_hour(hour_value)
+    limit = normalize_limit(limit)
+    start = datetime.combine(day, datetime.min.time()) + timedelta(hours=hour)
+    end = start + timedelta(hours=1)
+    params = [start.strftime('%Y-%m-%d %H:%M:%S'), end.strftime('%Y-%m-%d %H:%M:%S')]
+    user_filter = ''
+    if user['role'] != 'admin':
+        user_filter = 'and tasks.user_id = ?'
+        params.append(user['id'])
+    params.append(limit)
+    with db() as conn:
+        rows = conn.execute(
+            f'''
+            select
+                task_items.task_id,
+                tasks.title as task_title,
+                tasks.task_type as task_type,
+                coalesce(task_items.tweet_date, task_items.created_at) as activity_at,
+                task_items.tweet_url,
+                task_items.display_name,
+                task_items.screen_name,
+                task_items.content,
+                task_items.favorite_count,
+                task_items.retweet_count,
+                task_items.reply_count,
+                task_items.media_count
+            from task_items
+            join tasks on tasks.id = task_items.task_id
+            where datetime(coalesce(task_items.tweet_date, task_items.created_at)) >= datetime(?)
+              and datetime(coalesce(task_items.tweet_date, task_items.created_at)) < datetime(?)
+              {user_filter}
+            order by datetime(coalesce(task_items.tweet_date, task_items.created_at)) desc, task_items.id desc
+            limit ?
+            ''',
+            params,
+        ).fetchall()
+    return {
+        'source': 'local',
+        'date': day.strftime('%Y-%m-%d'),
+        'hour': hour,
+        'total': len(rows),
+        'items': [heatmap_item_payload(row, source='local') for row in rows],
+    }
+
+
+def external_heatmap_items(config, user, date_value, hour_value, limit=HEATMAP_ITEM_LIMIT):
+    day = normalize_heatmap_date(date_value)
+    hour = normalize_heatmap_hour(hour_value)
+    limit = normalize_limit(limit)
+    start = datetime.combine(day, datetime.min.time()) + timedelta(hours=hour)
+    end = start + timedelta(hours=1)
+    engine = result_db_engine(config)
+    ensure_result_db_schema(engine)
+    user_filter, user_params = external_task_filter(user)
+    params = {'start_at': start, 'end_at': end, 'limit': limit, **user_params}
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                f'''
+                select
+                    task_id,
+                    coalesce(tweet_date, created_at) as activity_at,
+                    tweet_url,
+                    display_name,
+                    screen_name,
+                    content,
+                    favorite_count,
+                    retweet_count,
+                    reply_count,
+                    media_count
+                from tw_result_items
+                where coalesce(tweet_date, created_at) >= :start_at
+                  and coalesce(tweet_date, created_at) < :end_at
+                  {user_filter}
+                order by coalesce(tweet_date, created_at) desc
+                limit :limit
+                '''
+            ),
+            params,
+        ).mappings().all()
+    titles = task_title_map([row['task_id'] for row in rows])
+    enriched_rows = []
+    for row in rows:
+        item = dict(row)
+        task_info = titles.get(item['task_id'], {})
+        item['task_title'] = task_info.get('title')
+        item['task_type'] = task_info.get('task_type')
+        enriched_rows.append(item)
+    return {
+        'source': 'external',
+        'date': day.strftime('%Y-%m-%d'),
+        'hour': hour,
+        'total': len(enriched_rows),
+        'items': [heatmap_item_payload(row, source='external') for row in enriched_rows],
+    }
+
+
+def dashboard_heatmap_items(user, date_value, hour_value, limit=HEATMAP_ITEM_LIMIT):
+    config = get_enabled_result_db()
+    if config:
+        try:
+            return external_heatmap_items(config, user, date_value, hour_value, limit=limit)
+        except Exception as exc:
+            append_operation_log('warning', 'result_db_heatmap_items_fallback', f'外部结果库热力图明细读取失败，已回退本地数据: {redact_sensitive(str(exc))}', error_type='result_db_heatmap_items_failed')
+    return local_heatmap_items(user, date_value, hour_value, limit=limit)
 
 
 def parse_datetime(value):
@@ -1612,6 +1831,11 @@ def schedule_payload(row):
         'schedule_type': row['schedule_type'],
         'run_time': row['run_time'],
         'weekdays': normalize_weekdays(row['weekdays']),
+        'timezone': row['timezone'] if 'timezone' in row.keys() else SERVER_TIMEZONE,
+        'missed_run_policy': row['missed_run_policy'] if 'missed_run_policy' in row.keys() else SCHEDULE_MISSED_RUN_POLICY,
+        'failure_policy': row['failure_policy'] if 'failure_policy' in row.keys() else SCHEDULE_FAILURE_POLICY,
+        'consecutive_failures': row['consecutive_failures'] if 'consecutive_failures' in row.keys() else 0,
+        'last_error': row['last_error'] if 'last_error' in row.keys() else None,
         'config': config,
         'next_run_at': row['next_run_at'],
         'last_run_at': row['last_run_at'],
@@ -1827,6 +2051,20 @@ def proxy_selection_score(proxy):
     failures = int(proxy['failure_count'] if 'failure_count' in proxy.keys() else 0)
     successes = int(proxy['success_count'] if 'success_count' in proxy.keys() else 0)
     return failures * 5 - successes
+
+
+def resource_policy_payload():
+    return {
+        'account_new_task_limit_24h': ACCOUNT_NEW_TASK_LIMIT_24H,
+        'account_stable_task_limit_24h': ACCOUNT_STABLE_TASK_LIMIT_24H,
+        'account_min_interval_seconds': ACCOUNT_MIN_INTERVAL_SECONDS,
+        'account_new_min_interval_seconds': ACCOUNT_NEW_MIN_INTERVAL_SECONDS,
+        'account_rate_limit_cooldown_seconds': ACCOUNT_RATE_LIMIT_COOLDOWN_SECONDS,
+        'account_transient_cooldown_seconds': ACCOUNT_TRANSIENT_COOLDOWN_SECONDS,
+        'proxy_min_interval_seconds': PROXY_MIN_INTERVAL_SECONDS,
+        'proxy_failure_cooldown_seconds': PROXY_FAILURE_COOLDOWN_SECONDS,
+        'proxy_rate_limit_cooldown_seconds': PROXY_RATE_LIMIT_COOLDOWN_SECONDS,
+    }
 
 
 def select_account_for_task_in_conn(conn, preferred_account_id=0):
@@ -2556,9 +2794,16 @@ def start_schedule_worker():
 
 
 def schedule_loop():
+    last_cleanup_date = None
     while not stop_schedule_worker:
         try:
             run_due_schedules()
+            today = datetime.now().date()
+            if last_cleanup_date != today:
+                deleted = cleanup_operation_logs()
+                last_cleanup_date = today
+                if deleted:
+                    append_operation_log('info', 'operation_logs_cleanup', f'已清理 {deleted} 条过期运维日志', details={'retention_days': OPERATION_LOG_RETENTION_DAYS})
         except Exception as exc:
             append_operation_log('error', 'scheduler_error', f'定时调度检查失败: {exc}', error_type='scheduler_error')
         slept = 0
@@ -2570,16 +2815,20 @@ def schedule_loop():
 def run_due_schedules():
     current = now()
     with db() as conn:
+        conn.execute('begin immediate')
         rows = conn.execute(
             '''
             select scheduled_tasks.*, users.username
             from scheduled_tasks
             join users on users.id = scheduled_tasks.user_id
-            where enabled = 1 and next_run_at is not null and next_run_at <= ?
+            where enabled = 1 and next_run_at is not null and next_run_at <= ? and coalesce(locked_at, '') = ''
             order by next_run_at asc
             ''',
             (current,),
         ).fetchall()
+        for row in rows:
+            conn.execute('update scheduled_tasks set locked_at = ?, updated_at = ? where id = ?', (current, current, row['id']))
+        conn.commit()
     for row in rows:
         trigger_schedule(row_to_dict(row))
 
@@ -2663,18 +2912,26 @@ def trigger_schedule(schedule):
             )
             next_run = next_schedule_run(schedule['schedule_type'], schedule['run_time'], schedule.get('weekdays'))
             with db() as conn:
-                conn.execute('update scheduled_tasks set next_run_at = ?, updated_at = ? where id = ?', (next_run, now(), schedule_id))
+                conn.execute('update scheduled_tasks set next_run_at = ?, locked_at = null, updated_at = ? where id = ?', (next_run, now(), schedule_id))
             return
         task_id = create_queued_task(schedule['user_id'], schedule['account_id'], config, resource_mode='scheduled', schedule_id=schedule_id)
         next_run = next_schedule_run(schedule['schedule_type'], schedule['run_time'], schedule.get('weekdays'))
         with db() as conn:
             conn.execute(
-                'update scheduled_tasks set last_run_at = ?, next_run_at = ?, last_task_id = ?, updated_at = ? where id = ?',
+                'update scheduled_tasks set last_run_at = ?, next_run_at = ?, last_task_id = ?, consecutive_failures = 0, last_error = null, locked_at = null, updated_at = ? where id = ?',
                 (now(), next_run, task_id, now(), schedule_id),
             )
         append_operation_log('info', 'schedule_triggered', f'定时计划已生成任务 #{task_id}', task_id=task_id, schedule_id=schedule_id)
     except Exception as exc:
-        append_operation_log('error', 'schedule_failed', f'定时计划触发失败: {exc}', schedule_id=schedule_id, error_type='schedule_failed')
+        with db() as conn:
+            row = conn.execute('select * from scheduled_tasks where id = ?', (schedule_id,)).fetchone()
+            failure_count = int(row['consecutive_failures'] if row and 'consecutive_failures' in row.keys() else 0) + 1
+            should_disable = failure_count >= SCHEDULE_FAILURE_DISABLE_THRESHOLD
+            conn.execute(
+                'update scheduled_tasks set consecutive_failures = ?, last_error = ?, enabled = ?, locked_at = null, updated_at = ? where id = ?',
+                (failure_count, redact_sensitive(str(exc)), 0 if should_disable else 1, now(), schedule_id),
+            )
+        append_operation_log('error', 'schedule_failed', f'定时计划触发失败: {exc}', schedule_id=schedule_id, error_type='schedule_failed', details={'consecutive_failures': failure_count, 'disabled': should_disable})
         try:
             next_run = next_schedule_run(schedule['schedule_type'], schedule['run_time'], schedule.get('weekdays'))
             with db() as conn:
@@ -2729,6 +2986,7 @@ def health_status_payload():
         **state,
         'accounts': {row['status']: row['count'] for row in accounts},
         'proxies': {row['status']: row['count'] for row in proxies},
+        'resource_policy': resource_policy_payload(),
     }
 
 
@@ -2978,6 +3236,7 @@ def run_task(task, worker_id='worker-1'):
     child_env.setdefault('TW_THROTTLE_DIR', str(DATA_DIR / 'throttle'))
     child_env.setdefault('TW_ACCOUNT_API_INTERVAL_SECONDS', str(ACCOUNT_API_INTERVAL_SECONDS))
     child_env.setdefault('TW_PROXY_API_INTERVAL_SECONDS', str(PROXY_API_INTERVAL_SECONDS))
+    child_env.setdefault('TW_MEDIA_DOWNLOAD_INTERVAL_SECONDS', str(MEDIA_DOWNLOAD_INTERVAL_SECONDS))
     child_env.setdefault('TW_CRAWLER_REQUEST_RETRIES', str(CRAWLER_REQUEST_RETRIES))
     with open(log_path, 'a', encoding='utf-8', errors='replace') as log_file:
         log_file.write(f'[{now()}] 启动任务 #{task["id"]}: {task["title"]}\n')
@@ -3431,7 +3690,8 @@ def dashboard_resource_summary(conn, accounts, proxies):
     return {'accounts': account_summary, 'proxies': proxy_summary}
 
 
-def dashboard_payload(user):
+def dashboard_payload(user, heatmap_days=HEATMAP_DEFAULT_DAYS):
+    heatmap_days = normalize_heatmap_days(heatmap_days)
     with db() as conn:
         if user['role'] == 'admin':
             rows = conn.execute('select tasks.*, users.username from tasks join users on users.id = tasks.user_id order by tasks.id desc').fetchall()
@@ -3489,7 +3749,7 @@ def dashboard_payload(user):
         'accounts': {row['status']: row['count'] for row in accounts},
         'status_counts': status_counts,
         'resources': resources,
-        'heatmap': dashboard_heatmap(7),
+        'heatmap': dashboard_heatmap(heatmap_days, user=user),
         'active_tasks': active_tasks,
         'attention_tasks': attention_tasks,
         'recent_outputs': recent_outputs,
@@ -3718,8 +3978,13 @@ def api_health_status(user=Depends(require_api_admin)):
 
 
 @app.get('/api/dashboard')
-def api_dashboard(user=Depends(require_api_user)):
-    return dashboard_payload(user)
+def api_dashboard(heatmap_days: int = HEATMAP_DEFAULT_DAYS, user=Depends(require_api_user)):
+    return dashboard_payload(user, heatmap_days=heatmap_days)
+
+
+@app.get('/api/dashboard/heatmap/items')
+def api_dashboard_heatmap_items(date: str, hour: int, limit: int = HEATMAP_ITEM_LIMIT, user=Depends(require_api_user)):
+    return dashboard_heatmap_items(user, date, hour, limit=limit)
 
 
 @app.get('/api/run/config')
@@ -3861,9 +4126,8 @@ def api_schedules(user=Depends(require_api_user)):
 async def api_create_schedule(request: Request, user=Depends(require_api_user)):
     data = await request.json()
     account_id = int(data.get('account_id') or 0)
-    if not account_id:
-        raise HTTPException(status_code=400, detail='请先选择 X 账号')
-    get_active_account_or_error(account_id)
+    if account_id:
+        get_active_account_or_error(account_id)
     config = build_schedule_config(data)
     schedule_type = str(data.get('schedule_type') or 'daily').strip()
     if schedule_type not in {'daily', 'weekly'}:
@@ -3873,12 +4137,13 @@ async def api_create_schedule(request: Request, user=Depends(require_api_user)):
     if schedule_type == 'weekly' and not weekdays:
         raise HTTPException(status_code=400, detail='每周任务至少选择一个星期')
     next_run = next_schedule_run(schedule_type, run_time, weekdays)
+    timezone = str(data.get('timezone') or SERVER_TIMEZONE).strip() or SERVER_TIMEZONE
     with db() as conn:
         cursor = conn.execute(
             '''
             insert into scheduled_tasks
-              (user_id, account_id, proxy_id, name, enabled, schedule_type, run_time, weekdays, config_json, next_run_at, last_run_at, last_task_id, created_at, updated_at)
-            values (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, null, null, ?, ?)
+              (user_id, account_id, proxy_id, name, enabled, schedule_type, run_time, weekdays, timezone, missed_run_policy, failure_policy, config_json, next_run_at, last_run_at, last_task_id, created_at, updated_at)
+            values (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, null, null, ?, ?)
             ''',
             (
                 user['id'],
@@ -3888,6 +4153,9 @@ async def api_create_schedule(request: Request, user=Depends(require_api_user)):
                 schedule_type,
                 run_time,
                 ','.join(str(day) for day in weekdays),
+                timezone,
+                SCHEDULE_MISSED_RUN_POLICY,
+                SCHEDULE_FAILURE_POLICY,
                 json.dumps(config, ensure_ascii=False),
                 next_run,
                 now(),
@@ -3896,7 +4164,7 @@ async def api_create_schedule(request: Request, user=Depends(require_api_user)):
         )
         schedule_id = cursor.lastrowid
         row = conn.execute('select scheduled_tasks.*, users.username from scheduled_tasks join users on users.id = scheduled_tasks.user_id where scheduled_tasks.id = ?', (schedule_id,)).fetchone()
-    append_operation_log('info', 'schedule_created', f'创建定时任务: {row["name"]}', schedule_id=schedule_id, details={'schedule_type': schedule_type, 'run_time': run_time})
+    append_operation_log('info', 'schedule_created', f'创建定时任务: {row["name"]}', schedule_id=schedule_id, details={'schedule_type': schedule_type, 'run_time': run_time, 'timezone': timezone})
     return {'schedule': schedule_payload(row)}
 
 
@@ -3904,8 +4172,9 @@ async def api_create_schedule(request: Request, user=Depends(require_api_user)):
 async def api_update_schedule(schedule_id: int, request: Request, user=Depends(require_api_user)):
     schedule = get_schedule_or_404(schedule_id, user)
     data = await request.json()
-    account_id = int(data.get('account_id') or schedule['account_id'])
-    get_active_account_or_error(account_id)
+    account_id = int(data.get('account_id') if 'account_id' in data else schedule['account_id'])
+    if account_id:
+        get_active_account_or_error(account_id)
     config = build_schedule_config({**json.loads(schedule['config_json'] or '{}'), **data, 'account_id': account_id})
     schedule_type = str(data.get('schedule_type') or schedule['schedule_type']).strip()
     if schedule_type not in {'daily', 'weekly'}:
@@ -3915,11 +4184,12 @@ async def api_update_schedule(schedule_id: int, request: Request, user=Depends(r
     if schedule_type == 'weekly' and not weekdays:
         raise HTTPException(status_code=400, detail='每周任务至少选择一个星期')
     next_run = next_schedule_run(schedule_type, run_time, weekdays)
+    timezone = str(data.get('timezone') or (schedule['timezone'] if 'timezone' in schedule.keys() else SERVER_TIMEZONE)).strip() or SERVER_TIMEZONE
     with db() as conn:
         conn.execute(
             '''
             update scheduled_tasks
-            set account_id = ?, proxy_id = ?, name = ?, enabled = ?, schedule_type = ?, run_time = ?, weekdays = ?, config_json = ?, next_run_at = ?, updated_at = ?
+            set account_id = ?, proxy_id = ?, name = ?, enabled = ?, schedule_type = ?, run_time = ?, weekdays = ?, timezone = ?, config_json = ?, next_run_at = ?, updated_at = ?
             where id = ?
             ''',
             (
@@ -3930,6 +4200,7 @@ async def api_update_schedule(schedule_id: int, request: Request, user=Depends(r
                 schedule_type,
                 run_time,
                 ','.join(str(day) for day in weekdays),
+                timezone,
                 json.dumps(config, ensure_ascii=False),
                 next_run,
                 now(),
@@ -3952,6 +4223,18 @@ def api_toggle_schedule(schedule_id: int, user=Depends(require_api_user)):
     return {'schedule': schedule_payload(row)}
 
 
+@app.post('/api/schedules/{schedule_id}/run-now')
+def api_run_schedule_now(schedule_id: int, user=Depends(require_api_user)):
+    schedule = get_schedule_or_404(schedule_id, user)
+    config = json.loads(schedule['config_json'] or '{}')
+    task_id = create_queued_task(schedule['user_id'], schedule['account_id'], config, resource_mode='scheduled_manual', schedule_id=schedule_id)
+    with db() as conn:
+        conn.execute('update scheduled_tasks set last_task_id = ?, updated_at = ? where id = ?', (task_id, now(), schedule_id))
+        row = conn.execute('select scheduled_tasks.*, users.username from scheduled_tasks join users on users.id = scheduled_tasks.user_id where scheduled_tasks.id = ?', (schedule_id,)).fetchone()
+    append_operation_log('info', 'schedule_run_now', f'手动触发定时任务生成任务 #{task_id}', task_id=task_id, schedule_id=schedule_id)
+    return {'schedule': schedule_payload(row), 'task_id': task_id}
+
+
 @app.delete('/api/schedules/{schedule_id}')
 def api_delete_schedule(schedule_id: int, user=Depends(require_api_user)):
     schedule = get_schedule_or_404(schedule_id, user)
@@ -3962,8 +4245,21 @@ def api_delete_schedule(schedule_id: int, user=Depends(require_api_user)):
 
 
 @app.get('/api/operation-logs')
-def api_operation_logs(user=Depends(require_api_user), task_id: int | None = None, schedule_id: int | None = None, level: str | None = None, limit: int = 200):
+def api_operation_logs(
+    user=Depends(require_api_user),
+    task_id: int | None = None,
+    schedule_id: int | None = None,
+    level: str | None = None,
+    event_type: str | None = None,
+    error_type: str | None = None,
+    start_at: str | None = None,
+    end_at: str | None = None,
+    q: str | None = None,
+    offset: int = 0,
+    limit: int = 200,
+):
     limit = max(1, min(int(limit or 200), 500))
+    offset = max(0, int(offset or 0))
     clauses = []
     params = []
     if task_id:
@@ -3975,6 +4271,22 @@ def api_operation_logs(user=Depends(require_api_user), task_id: int | None = Non
     if level:
         clauses.append('level = ?')
         params.append(level)
+    if event_type:
+        clauses.append('event_type = ?')
+        params.append(event_type)
+    if error_type:
+        clauses.append('error_type = ?')
+        params.append(error_type)
+    if start_at:
+        clauses.append('created_at >= ?')
+        params.append(start_at)
+    if end_at:
+        clauses.append('created_at <= ?')
+        params.append(end_at)
+    if q:
+        clauses.append('(message like ? or event_type like ? or error_type like ?)')
+        like = f'%{q}%'
+        params.extend([like, like, like])
     if user['role'] != 'admin':
         clauses.append(
             '''
@@ -3987,8 +4299,9 @@ def api_operation_logs(user=Depends(require_api_user), task_id: int | None = Non
         params.extend([user['id'], user['id']])
     where = f"where {' and '.join(clauses)}" if clauses else ''
     with db() as conn:
-        rows = conn.execute(f'select * from operation_logs {where} order by id desc limit ?', (*params, limit)).fetchall()
-    return {'logs': [operation_log_payload(row) for row in rows]}
+        total = conn.execute(f'select count(*) as count from operation_logs {where}', tuple(params)).fetchone()
+        rows = conn.execute(f'select * from operation_logs {where} order by id desc limit ? offset ?', (*params, limit, offset)).fetchall()
+    return {'logs': [operation_log_payload(row) for row in rows], 'total': int(total['count'] if total else 0), 'offset': offset, 'limit': limit}
 
 
 @app.get('/api/result-db')

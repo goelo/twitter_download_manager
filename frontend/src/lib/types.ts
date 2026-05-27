@@ -84,6 +84,11 @@ export type ScheduledTask = {
   schedule_type: 'daily' | 'weekly';
   run_time: string;
   weekdays: number[];
+  timezone: string;
+  missed_run_policy: string;
+  failure_policy: string;
+  consecutive_failures: number;
+  last_error: string | null;
   config: Record<string, unknown>;
   next_run_at: string | null;
   last_run_at: string | null;
@@ -104,6 +109,13 @@ export type OperationLog = {
   details: Record<string, unknown>;
 };
 
+export type OperationLogResponse = {
+  logs: OperationLog[];
+  total: number;
+  offset: number;
+  limit: number;
+};
+
 export type ScheduleFormValues = {
   name: string;
   account_id: number;
@@ -113,6 +125,7 @@ export type ScheduleFormValues = {
   schedule_type: 'daily' | 'weekly';
   run_time: string;
   weekdays: number[];
+  timezone: string;
   time_range: string;
   max_concurrent_requests: number;
   tweet_limit: number;
@@ -227,6 +240,30 @@ export type DashboardHeatmap = {
   cells: DashboardHeatmapCell[];
 };
 
+export type DashboardHeatmapItem = {
+  source: 'local' | 'external';
+  task_id: number;
+  task_title?: string | null;
+  task_type?: string | null;
+  activity_at: string;
+  tweet_url: string;
+  display_name: string;
+  screen_name: string;
+  content: string;
+  favorite_count: number;
+  retweet_count: number;
+  reply_count: number;
+  media_count: number;
+};
+
+export type DashboardHeatmapItems = {
+  source: 'local' | 'external';
+  date: string;
+  hour: number;
+  total: number;
+  items: DashboardHeatmapItem[];
+};
+
 export type ResultDbConfig = {
   id: number;
   label: string;
@@ -267,6 +304,7 @@ export type HealthStatus = {
   interval_seconds: number;
   accounts: Record<string, number>;
   proxies: Record<string, number>;
+  resource_policy?: Record<string, number>;
 };
 
 export type ApiError = {

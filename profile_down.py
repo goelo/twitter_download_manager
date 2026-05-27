@@ -1,9 +1,7 @@
 import os
-import httpx
 import re
 import json
-from proxy_utils import proxy_for_httpx
-from url_utils import quote_url
+from crawler_runtime import CrawlerClient, classify_exception
 
 
 
@@ -34,9 +32,11 @@ _headers['x-csrf-token'] = re.findall(re_token,_headers['cookie'])[0]
 def profile_down(screen_name, path):
 
     url = 'https://twitter.com/i/api/graphql/gEyDv8Fmv2BVTYIAf32nbA/UserByScreenName?variables={"screen_name":"' + screen_name + '","withGrokTranslatedBio":false}&features={"hidden_profile_subscriptions_enabled":true,"payments_enabled":false,"rweb_xchat_enabled":false,"profile_label_improvements_pcf_label_in_post_enabled":true,"rweb_tipjar_consumption_enabled":true,"verified_phone_label_enabled":false,"subscriptions_verification_info_is_identity_verified_enabled":true,"subscriptions_verification_info_verified_since_enabled":true,"highlights_tweets_tab_ui_enabled":true,"responsive_web_twitter_article_notes_tab_enabled":true,"subscriptions_feature_can_gift_premium":true,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_skip_user_profile_image_extensions_enabled":false,"responsive_web_graphql_timeline_navigation_enabled":true}&fieldToggles={"withAuxiliaryUserLabels":true}'
-    response = httpx.get(quote_url(url), headers=_headers, proxy=proxy_for_httpx(proxy)).text
-    raw_data = json.loads(response)
+    client = CrawlerClient(cookie=cookie, proxy=proxy, headers=_headers)
+    response = ''
     try:
+        response = client.get_text(url)
+        raw_data = json.loads(response)
         avatar_url = raw_data['data']['user']['result']['avatar']['image_url']
         description = raw_data['data']['user']['result']['legacy']['description']
         if 'profile_banner_url' not in raw_data['data']['user']['result']['legacy']:
@@ -46,18 +46,19 @@ def profile_down(screen_name, path):
 
         avatar_url = re.sub(r'_normal(\.\w+)$', r'_400x400\1', avatar_url) 
 
-        avatar_response = httpx.get(avatar_url, headers=_headers, proxy=proxy_for_httpx(proxy))
-        profile_banner_response = httpx.get(profile_banner_url, headers=_headers, proxy=proxy_for_httpx(proxy)) if profile_banner_url else None
+        avatar_content = client.get_media_bytes(avatar_url, quote=False)
+        profile_banner_content = client.get_media_bytes(profile_banner_url, quote=False) if profile_banner_url else None
 
         with open(_path + os.sep + screen_name + '_avatar.jpg', 'wb') as f:
-            f.write(avatar_response.content)
-        if profile_banner_response:
+            f.write(avatar_content)
+        if profile_banner_content:
             with open(_path + os.sep + screen_name + '_banner.jpg', 'wb') as f:
-                f.write(profile_banner_response.content)
+                f.write(profile_banner_content)
         with open(_path + os.sep + screen_name + '_description.txt', 'w', encoding='utf-8') as f:
             f.write(description)
     
     except Exception as e:
+        print(f'CRAWLER_ERROR_TYPE={classify_exception(e)}')
         print(f'用户: {screen_name}  失败: {e}')
         return False
     return True

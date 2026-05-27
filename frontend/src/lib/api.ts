@@ -1,4 +1,4 @@
-import type { Account, ApiError, BitBrowserImportResponse, Dashboard, HealthStatus, OperationLog, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, Task } from './types';
+import type { Account, ApiError, BitBrowserImportResponse, Dashboard, DashboardHeatmapItems, HealthStatus, OperationLogResponse, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, Task } from './types';
 
 export type LocalBrowserLoginResponse = {
   status: string;
@@ -38,7 +38,17 @@ export const api = {
   login: (payload: { username: string; password: string }) => request<{ user: import('./types').User }>('/api/login', { method: 'POST', body: JSON.stringify(payload) }),
   logout: () => request<{ ok: boolean }>('/api/logout', { method: 'POST' }),
   healthStatus: () => request<HealthStatus>('/api/health/status'),
-  dashboard: () => request<Dashboard>('/api/dashboard'),
+  dashboard: (params?: { heatmap_days?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.heatmap_days) query.set('heatmap_days', String(params.heatmap_days));
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return request<Dashboard>(`/api/dashboard${suffix}`);
+  },
+  dashboardHeatmapItems: (params: { date: string; hour: number; limit?: number }) => {
+    const query = new URLSearchParams({ date: params.date, hour: String(params.hour) });
+    if (params.limit) query.set('limit', String(params.limit));
+    return request<DashboardHeatmapItems>(`/api/dashboard/heatmap/items?${query.toString()}`);
+  },
   tasks: () => request<{ tasks: Task[] }>('/api/tasks'),
   task: (id: number) => request<{ task: Task }>(`/api/tasks/${id}`),
   createTask: (payload: Record<string, unknown>) => request<{ task: Task }>('/api/tasks', { method: 'POST', body: JSON.stringify(payload) }),
@@ -49,14 +59,21 @@ export const api = {
   updateSchedule: (id: number, payload: Record<string, unknown>) => request<{ schedule: ScheduledTask }>(`/api/schedules/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   toggleSchedule: (id: number) => request<{ schedule: ScheduledTask }>(`/api/schedules/${id}/toggle`, { method: 'POST' }),
   deleteSchedule: (id: number) => request<{ ok: boolean }>(`/api/schedules/${id}`, { method: 'DELETE' }),
-  operationLogs: (params?: { task_id?: number; schedule_id?: number; level?: string; limit?: number }) => {
+  runScheduleNow: (id: number) => request<{ schedule: ScheduledTask; task_id: number }>(`/api/schedules/${id}/run-now`, { method: 'POST' }),
+  operationLogs: (params?: { task_id?: number; schedule_id?: number; level?: string; event_type?: string; error_type?: string; start_at?: string; end_at?: string; q?: string; offset?: number; limit?: number }) => {
     const query = new URLSearchParams();
     if (params?.task_id) query.set('task_id', String(params.task_id));
     if (params?.schedule_id) query.set('schedule_id', String(params.schedule_id));
     if (params?.level) query.set('level', params.level);
+    if (params?.event_type) query.set('event_type', params.event_type);
+    if (params?.error_type) query.set('error_type', params.error_type);
+    if (params?.start_at) query.set('start_at', params.start_at);
+    if (params?.end_at) query.set('end_at', params.end_at);
+    if (params?.q) query.set('q', params.q);
+    if (params?.offset) query.set('offset', String(params.offset));
     if (params?.limit) query.set('limit', String(params.limit));
     const suffix = query.toString() ? `?${query.toString()}` : '';
-    return request<{ logs: OperationLog[] }>(`/api/operation-logs${suffix}`);
+    return request<OperationLogResponse>(`/api/operation-logs${suffix}`);
   },
   resultDbs: () => request<{ configs: ResultDbConfig[]; credential_key_configured: boolean }>('/api/result-db'),
   saveResultDb: (payload: ResultDbFormValues) => request<{ config: ResultDbConfig }>('/api/result-db', { method: 'POST', body: JSON.stringify(payload) }),

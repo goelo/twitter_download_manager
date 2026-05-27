@@ -15,7 +15,7 @@ from tag_down import hash_save_token
 from tag_down import stamp2time
 from transaction_generate import get_transaction_id
 from transaction_generate import get_url_path
-from crawler_runtime import CrawlerClient
+from crawler_runtime import AsyncCrawlerClient, CrawlerClient
 
 ##########配置区域##########
 
@@ -77,8 +77,7 @@ class csv_gen():
 
 def download_control(media_lst):
     async def _main():
-        client_limits = httpx.Limits(max_connections=max_concurrent_requests, max_keepalive_connections=max_concurrent_requests)
-        client = httpx.AsyncClient(proxy=proxy_for_httpx(proxy), limits=client_limits)
+        client = AsyncCrawlerClient(cookie=cookie, proxy=proxy, max_connections=max_concurrent_requests)
         async def down_save(url, _file_name, is_image):
             if is_image:
                 url += '?format=png&name=4096x4096'
@@ -87,7 +86,7 @@ def download_control(media_lst):
             while True:  #下载失败重试次数
                 try:
                     async with semaphore:
-                        response = await client.get(quote_url(url), timeout=(3.05, 16))        #如果出现第五次或以上的下载失败,且确认不是网络问题,可以适当降低最大并发数量
+                        response = await client.get(quote_url(url), timeout=(3.05, 16), media=True)        #如果出现第五次或以上的下载失败,且确认不是网络问题,可以适当降低最大并发数量
                     with open(_file_name,'wb') as f:
                         f.write(response.content)
                     break

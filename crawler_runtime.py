@@ -89,6 +89,7 @@ def resource_key(value):
 class RuntimeLimits:
     account_api_interval: float = 2.0
     proxy_api_interval: float = 0.5
+    media_download_interval: float = 0.0
     max_retries: int = 3
     backoff_base: float = 1.0
 
@@ -97,6 +98,7 @@ class RuntimeLimits:
         return cls(
             account_api_interval=float(os.environ.get('TW_ACCOUNT_API_INTERVAL_SECONDS', '2') or 2),
             proxy_api_interval=float(os.environ.get('TW_PROXY_API_INTERVAL_SECONDS', '0.5') or 0.5),
+            media_download_interval=float(os.environ.get('TW_MEDIA_DOWNLOAD_INTERVAL_SECONDS', '0') or 0),
             max_retries=max(1, int(os.environ.get('TW_CRAWLER_REQUEST_RETRIES', '3') or 3)),
             backoff_base=max(0.1, float(os.environ.get('TW_CRAWLER_BACKOFF_BASE_SECONDS', '1') or 1)),
         )
@@ -108,22 +110,26 @@ class FileThrottle:
         self.limits = limits or RuntimeLimits.from_env()
         self._local_lock = threading.Lock()
 
-    def wait(self, account_key='', proxy_key=''):
+    def wait(self, account_key='', proxy_key='', media_key=''):
         waits = []
         if account_key and self.limits.account_api_interval > 0:
             waits.append(self._reserve('account', account_key, self.limits.account_api_interval))
         if proxy_key and self.limits.proxy_api_interval > 0:
             waits.append(self._reserve('proxy', proxy_key, self.limits.proxy_api_interval))
+        if media_key and self.limits.media_download_interval > 0:
+            waits.append(self._reserve('media', media_key, self.limits.media_download_interval))
         delay = max(waits or [0])
         if delay > 0:
             time.sleep(delay)
 
-    async def async_wait(self, account_key='', proxy_key=''):
+    async def async_wait(self, account_key='', proxy_key='', media_key=''):
         waits = []
         if account_key and self.limits.account_api_interval > 0:
             waits.append(self._reserve('account', account_key, self.limits.account_api_interval))
         if proxy_key and self.limits.proxy_api_interval > 0:
             waits.append(self._reserve('proxy', proxy_key, self.limits.proxy_api_interval))
+        if media_key and self.limits.media_download_interval > 0:
+            waits.append(self._reserve('media', media_key, self.limits.media_download_interval))
         delay = max(waits or [0])
         if delay > 0:
             await asyncio.sleep(delay)
@@ -198,11 +204,17 @@ class CrawlerClient:
             request_headers.update(headers)
         return self._request_with_retries(url, request_headers, timeout, quote).content
 
-    def _request_with_retries(self, url, headers, timeout, should_quote):
+    def get_media_bytes(self, url, headers=None, timeout=DEFAULT_TIMEOUT, quote=True):
+        request_headers = dict(self.headers)
+        if headers:
+            request_headers.update(headers)
+        return self._request_with_retries(url, request_headers, timeout, quote, media=True).content
+
+    def _request_with_retries(self, url, headers, timeout, should_quote, media=False):
         last_error = None
         for attempt in range(1, self.limits.max_retries + 1):
             try:
-                self.throttle.wait(self.account_key, self.proxy_key)
+                self.throttle.wait(self.account_key if not media else '', self.proxy_key if not media else '', self.proxy_key or self.account_key if media else '')
                 response = httpx.get(quote_url(url) if should_quote else url, headers=headers, proxy=self.proxy, timeout=timeout)
                 raise_for_crawler_response(response)
                 return response
@@ -232,14 +244,14 @@ class AsyncCrawlerClient:
     async def aclose(self):
         await self.client.aclose()
 
-    async def get(self, url, headers=None, timeout=DEFAULT_TIMEOUT, quote=True):
+    async def get(self, url, headers=None, timeout=DEFAULT_TIMEOUT, quote=True, media=False):
         request_headers = dict(self.headers)
         if headers:
             request_headers.update(headers)
         last_error = None
         for attempt in range(1, self.limits.max_retries + 1):
             try:
-                await self.throttle.async_wait(self.account_key, self.proxy_key)
+                await self.throttle.async_wait(self.account_key if not media else '', self.proxy_key if not media else '', self.proxy_key or self.account_key if media else '')
                 response = await self.client.get(quote_url(url) if quote else url, headers=request_headers, timeout=timeout)
                 raise_for_crawler_response(response)
                 return response

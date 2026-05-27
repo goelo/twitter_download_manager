@@ -254,7 +254,7 @@ class BenchmarkAccountDownloader:
             while True:
                 try:
                     async with semaphore:
-                        response = await client.get(quote_url(url), timeout=(3.05, 16))
+                        response = await client.get(quote_url(url), timeout=(3.05, 16), media=True)
                     with open(file_path, 'wb') as f:
                         f.write(response.content)
                     self.download_count += 1

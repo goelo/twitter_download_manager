@@ -8,7 +8,7 @@ import json
 import sys
 
 sys.path.append('.')
-from crawler_runtime import CrawlerClient, classify_exception
+from crawler_runtime import AsyncCrawlerClient, CrawlerClient, classify_exception
 from user_info import User_info
 from csv_gen import csv_gen
 from md_gen import md_gen
@@ -362,7 +362,7 @@ def download_control(_user_info):
                 try:
                     async with semaphore:
                         global down_count
-                        response = await client.get(quote_url(url), timeout=(3.05, 16))        #如果出现第五次或以上的下载失败,且确认不是网络问题,可以适当降低最大并发数量
+                        response = await client.get(quote_url(url), timeout=(3.05, 16), media=True)        #如果出现第五次或以上的下载失败,且确认不是网络问题,可以适当降低最大并发数量
                         if response.status_code == 404:
                             raise Exception('404')
                         down_count += 1
@@ -394,8 +394,7 @@ def download_control(_user_info):
             elif photo_lst[0] == True:
                 continue
             semaphore = asyncio.Semaphore(max_concurrent_requests)    #最大并发数量，默认为8，对自己网络有自信的可以调高
-            client_limits = httpx.Limits(max_connections=max_concurrent_requests, max_keepalive_connections=max_concurrent_requests)
-            client = httpx.AsyncClient(proxy=proxies, limits=client_limits)
+            client = AsyncCrawlerClient(cookie=settings['cookie'], proxy=settings.get('proxy') or '', headers=_headers, max_connections=max_concurrent_requests)
             if down_log:
                 try:
                     await asyncio.gather(*[asyncio.create_task(down_save(url[0], url[1], url[2], order)) for order,url in enumerate(photo_lst) if cache_data.is_present(url[0])])

@@ -8,12 +8,14 @@ import { Button } from './components/ui/button';
 import { Card, CardContent, CardHeader } from './components/ui/card';
 import { Input } from './components/ui/input';
 import { Textarea } from './components/ui/textarea';
-import type { Account, BitBrowserImportResult, DashboardHeatmap, DashboardTask, OperationLog, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, ScheduleFormValues, Task, TaskFormValues, TaskPreview, TaskType } from './lib/types';
+import type { Account, BitBrowserImportResult, DashboardHeatmap, DashboardHeatmapCell, DashboardHeatmapItem, DashboardTask, OperationLog, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, ScheduleFormValues, Task, TaskFormValues, TaskPreview, TaskType } from './lib/types';
 import { cn } from './lib/utils';
 import { getTaskTemplateById, taskTemplates, type TaskTemplate } from './lib/templates';
 import { defaultRunTimeRange, defaultTaskTimeRange, presetFromTimeRange, rangeFromPreset, splitTimeRange, timeRangeError, TIME_PRESETS, todayString, type TimePreset } from './lib/timeRange';
 
 type BadgeTone = 'neutral' | 'success' | 'warning' | 'danger' | 'primary';
+type HeatmapMetric = 'count' | 'media_count' | 'task_count';
+type HeatmapDays = 1 | 7 | 30;
 
 const USABLE_ACCOUNT_STATUSES = new Set(['active', 'unknown', 'check_failed']);
 
@@ -75,6 +77,7 @@ const DEFAULT_SCHEDULE_FORM: ScheduleFormValues = {
   schedule_type: 'daily',
   run_time: '09:00',
   weekdays: [1, 2, 3, 4, 5],
+  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'local',
   time_range: rangeFromPreset('7d'),
   max_concurrent_requests: 8,
   tweet_limit: 10,
@@ -361,8 +364,17 @@ function ActionBar({ children }: { children: React.ReactNode }) {
 }
 
 function DashboardPage() {
-  const { data, isLoading } = useQuery({ queryKey: ['dashboard'], queryFn: () => api.dashboard(), refetchInterval: 5000 });
+  const [heatmapDays, setHeatmapDays] = useState<HeatmapDays>(7);
+  const [heatmapMetric, setHeatmapMetric] = useState<HeatmapMetric>('count');
+  const [selectedHeatmapCell, setSelectedHeatmapCell] = useState<{ date: string; hour: number } | null>(null);
+  const { data, isLoading } = useQuery({ queryKey: ['dashboard', heatmapDays], queryFn: () => api.dashboard({ heatmap_days: heatmapDays }), refetchInterval: 5000 });
   const { data: health } = useQuery({ queryKey: ['health-status'], queryFn: () => api.healthStatus(), refetchInterval: 15000 });
+  const { data: heatmapItems, isFetching: heatmapItemsLoading } = useQuery({
+    queryKey: ['dashboard-heatmap-items', selectedHeatmapCell?.date, selectedHeatmapCell?.hour],
+    queryFn: () => api.dashboardHeatmapItems({ date: selectedHeatmapCell!.date, hour: selectedHeatmapCell!.hour, limit: 50 }),
+    enabled: Boolean(selectedHeatmapCell),
+    refetchInterval: selectedHeatmapCell ? 5000 : false,
+  });
   const dashboard = data;
 
   if (isLoading && !dashboard) return <div className="text-sm text-[hsl(var(--muted))]">加载中...</div>;
@@ -418,7 +430,20 @@ function DashboardPage() {
         <AttentionPanel tasks={attentionTasks} accountIssues={accountIssues} proxyIssues={proxyIssues} healthError={health?.last_error || ''} />
       </div>
 
-      <HeatmapPanel heatmap={dashboard.heatmap} />
+      <HeatmapPanel
+        heatmap={dashboard.heatmap}
+        days={heatmapDays}
+        metric={heatmapMetric}
+        selectedCell={selectedHeatmapCell}
+        items={heatmapItems?.items || []}
+        itemsLoading={heatmapItemsLoading}
+        onDaysChange={(value) => {
+          setHeatmapDays(value);
+          setSelectedHeatmapCell(null);
+        }}
+        onMetricChange={setHeatmapMetric}
+        onCellSelect={setSelectedHeatmapCell}
+      />
 
       <div className="grid gap-3 md:grid-cols-4">
         <Metric title="采集记录" value={dashboard.totals.records} />
@@ -624,20 +649,93 @@ function AttentionNote({ label, value, href }: { label: string; value: string; h
   );
 }
 
-function heatmapLevel(count: number, maxCount: number) {
-  if (!count || !maxCount) return 'bg-[rgba(148,163,184,0.12)] border-[rgba(148,163,184,0.18)]';
-  const ratio = count / maxCount;
+const HEATMAP_DAY_OPTIONS: Array<{ label: string; value: HeatmapDays }> = [
+  { label: '24小时', value: 1 },
+  { label: '7天', value: 7 },
+  { label: '30天', value: 30 },
+];
+
+const HEATMAP_METRICS: Array<{ label: string; value: HeatmapMetric; totalLabel: string }> = [
+  { label: '记录数', value: 'count', totalLabel: '记录' },
+  { label: '媒体数', value: 'media_count', totalLabel: '媒体' },
+  { label: '任务数', value: 'task_count', totalLabel: '任务' },
+];
+
+function heatmapMetricValue(cell: DashboardHeatmapCell | undefined, metric: HeatmapMetric) {
+  if (!cell) return 0;
+  return Number(cell[metric] || 0);
+}
+
+function heatmapLevel(value: number, maxValue: number, selected = false) {
+  if (selected) return 'bg-[rgba(249,115,22,0.98)] border-[rgba(255,237,213,0.95)] ring-2 ring-[rgba(255,237,213,0.45)]';
+  if (!value || !maxValue) return 'bg-[rgba(148,163,184,0.12)] border-[rgba(148,163,184,0.18)]';
+  const ratio = value / maxValue;
   if (ratio >= 0.8) return 'bg-[rgba(249,115,22,0.92)] border-[rgba(249,115,22,0.95)]';
   if (ratio >= 0.55) return 'bg-[rgba(251,191,36,0.78)] border-[rgba(251,191,36,0.82)]';
   if (ratio >= 0.3) return 'bg-[rgba(14,165,233,0.62)] border-[rgba(14,165,233,0.68)]';
   return 'bg-[rgba(59,130,246,0.34)] border-[rgba(59,130,246,0.42)]';
 }
 
-function HeatmapPanel({ heatmap }: { heatmap?: DashboardHeatmap }) {
+function heatmapSummary(heatmap: DashboardHeatmap | undefined, metric: HeatmapMetric) {
+  const cells = heatmap?.cells || [];
+  const today = heatmap?.dates?.[heatmap.dates.length - 1];
+  const yesterday = heatmap?.dates?.[heatmap.dates.length - 2];
+  const metricLabel = HEATMAP_METRICS.find((item) => item.value === metric)?.totalLabel || '记录';
+  let total = 0;
+  let todayTotal = 0;
+  let yesterdayTotal = 0;
+  let maxValue = 0;
+  let peak: DashboardHeatmapCell | null = null;
+  const tasks = new Set<string>();
+  for (const cell of cells) {
+    const value = heatmapMetricValue(cell, metric);
+    total += value;
+    if (cell.date === today) todayTotal += value;
+    if (cell.date === yesterday) yesterdayTotal += value;
+    if (value > maxValue) {
+      maxValue = value;
+      peak = cell;
+    }
+    if (cell.task_count) tasks.add(`${cell.date}-${cell.hour}`);
+  }
+  return {
+    total,
+    todayTotal,
+    yesterdayTotal,
+    maxValue,
+    peakLabel: peak ? `${peak.date.slice(5)} ${String(peak.hour).padStart(2, '0')}:00` : '-',
+    taskWindows: tasks.size,
+    metricLabel,
+  };
+}
+
+function HeatmapPanel({
+  heatmap,
+  days,
+  metric,
+  selectedCell,
+  items,
+  itemsLoading,
+  onDaysChange,
+  onMetricChange,
+  onCellSelect,
+}: {
+  heatmap?: DashboardHeatmap;
+  days: HeatmapDays;
+  metric: HeatmapMetric;
+  selectedCell: { date: string; hour: number } | null;
+  items: DashboardHeatmapItem[];
+  itemsLoading: boolean;
+  onDaysChange: (value: HeatmapDays) => void;
+  onMetricChange: (value: HeatmapMetric) => void;
+  onCellSelect: (value: { date: string; hour: number }) => void;
+}) {
   const cells = heatmap?.cells || [];
   const cellByKey = new Map(cells.map((cell) => [`${cell.date}-${cell.hour}`, cell]));
   const dates = heatmap?.dates || [];
   const hours = heatmap?.hours || Array.from({ length: 24 }, (_, index) => index);
+  const summary = heatmapSummary(heatmap, metric);
+  const metricName = HEATMAP_METRICS.find((item) => item.value === metric)?.label || '记录数';
   return (
     <Card>
       <CardHeader>
@@ -646,14 +744,25 @@ function HeatmapPanel({ heatmap }: { heatmap?: DashboardHeatmap }) {
             <BarChart3 className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
             <h2 className="font-semibold">采集时间热力图</h2>
           </div>
-          <div className="text-xs text-[hsl(var(--muted))]">
-            最近 {heatmap?.days || 7} 天 · 记录数 · 数据源：{heatmap?.source === 'external' ? '外部结果库' : '本地索引库'}
+          <div className="flex flex-wrap items-center gap-2">
+            <SegmentedControl options={HEATMAP_DAY_OPTIONS} value={days} onChange={onDaysChange} />
+            <SegmentedControl options={HEATMAP_METRICS} value={metric} onChange={onMetricChange} />
           </div>
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
+        <div className="grid gap-2 md:grid-cols-4">
+          <InfoCard title={`总${summary.metricLabel}`} value={String(summary.total)} />
+          <InfoCard title={`今日${summary.metricLabel}`} value={String(summary.todayTotal)} />
+          <InfoCard title={`昨日${summary.metricLabel}`} value={String(summary.yesterdayTotal)} />
+          <InfoCard title="峰值时段" value={summary.peakLabel} />
+        </div>
         <div className="overflow-auto">
           <div className="min-w-[980px]">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-xs text-[hsl(var(--muted))]">
+              <div>最近 {heatmap?.days || days} 天 · {metricName} · 数据源：{heatmap?.source === 'external' ? '外部结果库' : '本地索引库'}</div>
+              <div>总量 {summary.total} · 峰值 {summary.maxValue} · 活跃时段 {summary.taskWindows}</div>
+            </div>
             <div className="grid gap-1" style={{ gridTemplateColumns: `88px repeat(${hours.length}, minmax(28px, 1fr))` }}>
               <div />
               {hours.map((hour) => (
@@ -664,11 +773,16 @@ function HeatmapPanel({ heatmap }: { heatmap?: DashboardHeatmap }) {
                   <div className="flex items-center text-xs text-[hsl(var(--muted))]">{date.slice(5)}</div>
                   {hours.map((hour) => {
                     const cell = cellByKey.get(`${date}-${hour}`) || { date, hour, count: 0, media_count: 0, task_count: 0 };
+                    const value = heatmapMetricValue(cell, metric);
+                    const selected = selectedCell?.date === date && selectedCell.hour === hour;
                     return (
-                      <div
+                      <button
                         key={`${date}-${hour}`}
+                        type="button"
+                        onClick={() => onCellSelect({ date, hour })}
                         title={`${date} ${String(hour).padStart(2, '0')}:00 记录 ${cell.count} · 媒体 ${cell.media_count} · 任务 ${cell.task_count}`}
-                        className={cn('h-7 rounded border transition-colors', heatmapLevel(cell.count, heatmap?.max_count || 0))}
+                        className={cn('h-7 cursor-pointer rounded border transition-colors hover:border-[hsl(var(--text))]', heatmapLevel(value, summary.maxValue, selected))}
+                        aria-label={`${date} ${hour}点 ${metricName} ${value}`}
                       />
                     );
                   })}
@@ -688,8 +802,95 @@ function HeatmapPanel({ heatmap }: { heatmap?: DashboardHeatmap }) {
             </div>
           </div>
         </div>
+        <HeatmapDrilldown selectedCell={selectedCell} items={items} loading={itemsLoading} />
       </CardContent>
     </Card>
+  );
+}
+
+function SegmentedControl<T extends string | number>({ options, value, onChange }: { options: Array<{ label: string; value: T }>; value: T; onChange: (value: T) => void }) {
+  return (
+    <div className="flex rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-1">
+      {options.map((option) => (
+        <button
+          key={String(option.value)}
+          type="button"
+          onClick={() => onChange(option.value)}
+          className={cn(
+            'min-h-8 cursor-pointer rounded-md px-3 text-xs font-medium transition-colors',
+            option.value === value ? 'bg-[hsl(var(--primary))] text-slate-950' : 'text-[hsl(var(--muted))] hover:bg-[rgba(148,163,184,0.12)] hover:text-[hsl(var(--text))]',
+          )}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function HeatmapDrilldown({ selectedCell, items, loading }: { selectedCell: { date: string; hour: number } | null; items: DashboardHeatmapItem[]; loading: boolean }) {
+  if (!selectedCell) {
+    return (
+      <div className="rounded-lg border border-dashed border-[hsl(var(--line))] px-4 py-6 text-center text-sm text-[hsl(var(--muted))]">
+        点击热力图中的任意时段，查看对应采集内容。
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))]">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[hsl(var(--line))] px-4 py-3">
+        <div>
+          <div className="font-semibold">{selectedCell.date} {String(selectedCell.hour).padStart(2, '0')}:00</div>
+          <div className="text-xs text-[hsl(var(--muted))]">最新 {items.length} 条采集内容</div>
+        </div>
+        {loading && <div className="text-xs text-[hsl(var(--muted))]">刷新中...</div>}
+      </div>
+      <div className="divide-y divide-[hsl(var(--line))]">
+        {items.map((item) => (
+          <HeatmapItemRow key={`${item.task_id}-${item.tweet_url}-${item.activity_at}`} item={item} />
+        ))}
+        {!items.length && (
+          <div className="px-4 py-8 text-center text-sm text-[hsl(var(--muted))]">
+            {loading ? '正在读取采集内容...' : '该时段暂无采集内容'}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function HeatmapItemRow({ item }: { item: DashboardHeatmapItem }) {
+  const metrics = [
+    item.favorite_count ? `${item.favorite_count} 赞` : '',
+    item.retweet_count ? `${item.retweet_count} 转` : '',
+    item.reply_count ? `${item.reply_count} 评` : '',
+    item.media_count ? `${item.media_count} 媒体` : '',
+  ].filter(Boolean).join(' · ');
+  return (
+    <div className="grid gap-3 px-4 py-3 text-sm lg:grid-cols-[180px_1fr_auto]">
+      <div className="min-w-0">
+        <button className="block truncate font-semibold hover:text-[hsl(var(--primary-dark))]" onClick={() => (window.location.href = `/tasks/${item.task_id}`)}>
+          {item.task_title || `任务 #${item.task_id}`}
+        </button>
+        <div className="mt-1 text-xs text-[hsl(var(--muted))]">{item.activity_at || '-'}</div>
+      </div>
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-[hsl(var(--muted))]">
+          <span>{item.display_name || '-'}</span>
+          {item.screen_name && <span>@{item.screen_name.replace(/^@/, '')}</span>}
+        </div>
+        <div className="mt-1 line-clamp-2 leading-5">{item.content || item.tweet_url || '-'}</div>
+      </div>
+      <div className="flex flex-wrap items-center justify-start gap-2 lg:justify-end">
+        {metrics && <span className="text-xs text-[hsl(var(--muted))]">{metrics}</span>}
+        {item.tweet_url && (
+          <Button variant="secondary" size="sm" onClick={() => window.open(item.tweet_url, '_blank', 'noopener,noreferrer')}>
+            <Eye className="h-4 w-4" />
+            原文
+          </Button>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -1452,9 +1653,12 @@ function TaskDetailPage({ id }: { id: number }) {
       <TaskPreviewPanel preview={task.preview} />
 
       <div>
-        <div className="mb-3 flex items-center gap-2">
-          <ClipboardList className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
-          <h3 className="font-semibold">运维事件</h3>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <ClipboardList className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
+            <h3 className="font-semibold">运维事件</h3>
+          </div>
+          <Button variant="secondary" size="sm" onClick={() => navigate(`/operation-logs?task_id=${task.id}`)}>查看全部关联日志</Button>
         </div>
         <OperationLogTable logs={operationLogs} />
       </div>
@@ -1667,6 +1871,7 @@ function SchedulesPage() {
   const { data: scheduleData } = useQuery({ queryKey: ['schedules'], queryFn: () => api.schedules(), refetchInterval: 8000 });
   const { data: accountData } = useQuery({ queryKey: ['accounts'], queryFn: () => api.accounts() });
   const { data: proxiesData } = useQuery({ queryKey: ['proxies'], queryFn: () => api.proxies() });
+  const { data: health } = useQuery({ queryKey: ['health-status'], queryFn: () => api.healthStatus(), refetchInterval: 15000 });
   const schedules = scheduleData?.schedules || [];
   const usableAccounts = (accountData?.accounts || []).filter((account) => USABLE_ACCOUNT_STATUSES.has(account.status));
   const usableProxies = (proxiesData?.proxies || []).filter((proxy) => proxy.enabled && proxy.status === 'active');
@@ -1691,11 +1896,14 @@ function SchedulesPage() {
     mutationFn: (id: number) => api.deleteSchedule(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['schedules'] }),
   });
-
-  useEffect(() => {
-    const firstAccountId = usableAccounts[0]?.id;
-    if (firstAccountId && !form.account_id) setForm((prev) => ({ ...prev, account_id: firstAccountId }));
-  }, [usableAccounts, form.account_id]);
+  const runScheduleNow = useMutation({
+    mutationFn: (id: number) => api.runScheduleNow(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['schedules'] });
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
 
   const editSchedule = (schedule: ScheduledTask) => {
     setEditingId(schedule.id);
@@ -1708,6 +1916,7 @@ function SchedulesPage() {
       schedule_type: schedule.schedule_type,
       run_time: schedule.run_time,
       weekdays: schedule.weekdays.length ? schedule.weekdays : DEFAULT_SCHEDULE_FORM.weekdays,
+      timezone: schedule.timezone || DEFAULT_SCHEDULE_FORM.timezone,
     } as ScheduleFormValues);
   };
 
@@ -1732,6 +1941,7 @@ function SchedulesPage() {
             <Field label="计划名称"><Input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} /></Field>
             <Field label="X账号">
               <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.account_id} onChange={(e) => setForm((prev) => ({ ...prev, account_id: Number(e.target.value) }))}>
+                <option value={0}>自动分配可用账号</option>
                 {usableAccounts.map((account) => <option key={account.id} value={account.id}>{account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}</option>)}
               </select>
             </Field>
@@ -1775,9 +1985,19 @@ function SchedulesPage() {
             </Field>
             <Field label="时间范围"><Input value={form.time_range} onChange={(e) => setForm((prev) => ({ ...prev, time_range: e.target.value }))} /></Field>
           </div>
+          <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2 text-sm text-[hsl(var(--muted))]">
+            服务器时区：{form.timezone || 'local'} · 错过执行默认跳过 · 连续失败 3 次自动停用
+          </div>
+          {health?.resource_policy && (
+            <div className="grid gap-2 md:grid-cols-3">
+              <InfoCard title="新号每日上限" value={String(health.resource_policy.account_new_task_limit_24h)} />
+              <InfoCard title="稳定号每日上限" value={String(health.resource_policy.account_stable_task_limit_24h)} />
+              <InfoCard title="限流冷却" value={`${health.resource_policy.account_rate_limit_cooldown_seconds / 3600}h`} />
+            </div>
+          )}
           <div className="flex justify-end gap-2">
             {editingId && <Button variant="secondary" onClick={() => { setEditingId(null); setForm(DEFAULT_SCHEDULE_FORM); }}>取消编辑</Button>}
-            <Button onClick={() => saveSchedule.mutate()} disabled={saveSchedule.isPending || !form.targets.trim() || !form.account_id}>保存计划</Button>
+            <Button onClick={() => saveSchedule.mutate()} disabled={saveSchedule.isPending || !form.targets.trim()}>保存计划</Button>
           </div>
         </CardContent>
       </Card>
@@ -1786,7 +2006,7 @@ function SchedulesPage() {
           <div className="overflow-auto">
             <table className="w-full min-w-[1120px] border-collapse text-sm">
               <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
-                <tr><th className="px-4 py-3">计划</th><th className="px-4 py-3">状态</th><th className="px-4 py-3">周期</th><th className="px-4 py-3">目标</th><th className="px-4 py-3">下次执行</th><th className="px-4 py-3">最近任务</th><th className="px-4 py-3"></th></tr>
+                <tr><th className="px-4 py-3">计划</th><th className="px-4 py-3">状态</th><th className="px-4 py-3">周期</th><th className="px-4 py-3">目标</th><th className="px-4 py-3">下次执行</th><th className="px-4 py-3">失败</th><th className="px-4 py-3">最近任务</th><th className="px-4 py-3"></th></tr>
               </thead>
               <tbody>
                 {schedules.map((schedule) => (
@@ -1796,11 +2016,12 @@ function SchedulesPage() {
                     <td className="px-4 py-3">{schedule.schedule_type === 'daily' ? '每日' : `每周 ${schedule.weekdays.map((day) => WEEKDAYS.find((item) => item.value === day)?.label).join(' ')}`} · {schedule.run_time}</td>
                     <td className="max-w-[260px] truncate px-4 py-3">{String(schedule.config.targets || '-')}</td>
                     <td className="px-4 py-3">{schedule.next_run_at || '-'}</td>
+                    <td className="px-4 py-3">{schedule.consecutive_failures}{schedule.last_error ? <div className="max-w-[220px] truncate text-xs text-[hsl(var(--danger))]">{schedule.last_error}</div> : null}</td>
                     <td className="px-4 py-3">{schedule.last_task_id ? <a className="text-[hsl(var(--primary-dark))]" href={`/tasks/${schedule.last_task_id}`}>#{schedule.last_task_id}</a> : '-'}</td>
-                    <td className="px-4 py-3"><div className="flex justify-end gap-2"><Button variant="secondary" size="sm" onClick={() => editSchedule(schedule)}>编辑</Button><Button variant="secondary" size="sm" onClick={() => toggleSchedule.mutate(schedule.id)}>{schedule.enabled ? '停用' : '启用'}</Button><Button variant="danger" size="sm" onClick={() => deleteSchedule.mutate(schedule.id)}>删除</Button></div></td>
+                    <td className="px-4 py-3"><div className="flex justify-end gap-2"><Button variant="secondary" size="sm" onClick={() => runScheduleNow.mutate(schedule.id)}>立即执行</Button><Button variant="secondary" size="sm" onClick={() => editSchedule(schedule)}>编辑</Button><Button variant="secondary" size="sm" onClick={() => toggleSchedule.mutate(schedule.id)}>{schedule.enabled ? '停用' : '启用'}</Button><Button variant="danger" size="sm" onClick={() => deleteSchedule.mutate(schedule.id)}>删除</Button></div></td>
                   </tr>
                 ))}
-                {!schedules.length && <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={7}>暂无定时任务</td></tr>}
+                {!schedules.length && <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={8}>暂无定时任务</td></tr>}
               </tbody>
             </table>
           </div>
@@ -1811,14 +2032,40 @@ function SchedulesPage() {
 }
 
 function OperationLogsPage() {
+  const [searchParams] = useSearchParams();
   const [level, setLevel] = useState('');
-  const { data, refetch } = useQuery({ queryKey: ['operation-logs', level], queryFn: () => api.operationLogs({ level: level || undefined, limit: 300 }), refetchInterval: 5000 });
+  const [eventType, setEventType] = useState('');
+  const [errorType, setErrorType] = useState('');
+  const [query, setQuery] = useState('');
+  const [startAt, setStartAt] = useState('');
+  const [endAt, setEndAt] = useState('');
+  const [offset, setOffset] = useState(0);
+  const limit = 100;
+  const taskId = Number(searchParams.get('task_id') || 0) || undefined;
+  const scheduleId = Number(searchParams.get('schedule_id') || 0) || undefined;
+  const params = {
+    task_id: taskId,
+    schedule_id: scheduleId,
+    level: level || undefined,
+    event_type: eventType || undefined,
+    error_type: errorType || undefined,
+    q: query || undefined,
+    start_at: startAt ? `${startAt} 00:00:00` : undefined,
+    end_at: endAt ? `${endAt} 23:59:59` : undefined,
+    offset,
+    limit,
+  };
+  const { data, refetch } = useQuery({ queryKey: ['operation-logs', params], queryFn: () => api.operationLogs(params), refetchInterval: 5000 });
   const logs = data?.logs || [];
+  const total = data?.total || 0;
+  const canPrev = offset > 0;
+  const canNext = offset + limit < total;
+  const resetPage = () => setOffset(0);
   return (
     <div className="space-y-4">
       <div>
         <h2 className="text-2xl font-semibold">运维日志</h2>
-        <p className="mt-1 text-sm text-[hsl(var(--muted))]">记录任务创建、调度、执行、失败分类和重试事件。</p>
+        <p className="mt-1 text-sm text-[hsl(var(--muted))]">记录任务创建、调度、执行、失败分类和重试事件。{taskId ? `当前筛选任务 #${taskId}` : ''}{scheduleId ? `当前筛选计划 #${scheduleId}` : ''}</p>
       </div>
       <ActionBar>
         <select className="h-10 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3 text-sm" value={level} onChange={(e) => setLevel(e.target.value)}>
@@ -1827,9 +2074,22 @@ function OperationLogsPage() {
           <option value="warning">警告</option>
           <option value="error">错误</option>
         </select>
+        <Input className="w-40" placeholder="事件类型" value={eventType} onChange={(e) => { setEventType(e.target.value); resetPage(); }} />
+        <Input className="w-40" placeholder="错误类型" value={errorType} onChange={(e) => { setErrorType(e.target.value); resetPage(); }} />
+        <Input className="w-48" placeholder="关键词" value={query} onChange={(e) => { setQuery(e.target.value); resetPage(); }} />
+        <Input className="w-40" type="date" value={startAt} onChange={(e) => { setStartAt(e.target.value); resetPage(); }} />
+        <Input className="w-40" type="date" value={endAt} onChange={(e) => { setEndAt(e.target.value); resetPage(); }} />
+        <Button variant="secondary" onClick={() => { setLevel(''); setEventType(''); setErrorType(''); setQuery(''); setStartAt(''); setEndAt(''); setOffset(0); }}>清空筛选</Button>
         <Button variant="secondary" onClick={() => refetch()}><RefreshCcw className="h-4 w-4" />刷新</Button>
       </ActionBar>
       <OperationLogTable logs={logs} />
+      <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-[hsl(var(--muted))]">
+        <div>共 {total} 条，当前 {total ? offset + 1 : 0}-{Math.min(offset + limit, total)}</div>
+        <div className="flex gap-2">
+          <Button variant="secondary" size="sm" disabled={!canPrev} onClick={() => setOffset(Math.max(0, offset - limit))}>上一页</Button>
+          <Button variant="secondary" size="sm" disabled={!canNext} onClick={() => setOffset(offset + limit)}>下一页</Button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -256,6 +256,22 @@ Recommended mitigation:
 - Verify proxy availability before running large tasks.
 - Use authorized accounts and avoid unnecessary repeated requests.
 
+Resource governance defaults:
+
+| Environment variable | Default | Description |
+| --- | ---: | --- |
+| `TW_ACCOUNT_NEW_TASK_LIMIT_24H` | `3` | Daily task cap for new accounts. |
+| `TW_ACCOUNT_STABLE_TASK_LIMIT_24H` | `20` | Daily task cap for stable accounts. |
+| `TW_ACCOUNT_NEW_MIN_INTERVAL_SECONDS` | `1800` | Minimum interval between tasks for new accounts. |
+| `TW_ACCOUNT_MIN_INTERVAL_SECONDS` | `600` | Minimum interval between tasks for stable accounts. |
+| `TW_ACCOUNT_RATE_LIMIT_COOLDOWN_SECONDS` | `21600` | Account cooldown after rate-limit failures. |
+| `TW_ACCOUNT_TRANSIENT_COOLDOWN_SECONDS` | `1800` | Account cooldown after transient network failures. |
+| `TW_PROXY_MIN_INTERVAL_SECONDS` | `180` | Minimum interval between proxy assignments. |
+| `TW_PROXY_FAILURE_COOLDOWN_SECONDS` | `1800` | Proxy cooldown after network failures. |
+| `TW_PROXY_RATE_LIMIT_COOLDOWN_SECONDS` | `7200` | Proxy cooldown after rate-limit failures. |
+
+Scheduled tasks can use a fixed account or `account_id = 0` for automatic account assignment. Automatic assignment reuses the same resource governance and atomic reservation path as manually created tasks.
+
 ## FAQ
 
 ### Which Cookie fields are required?

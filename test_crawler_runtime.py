@@ -7,6 +7,7 @@ os.environ['TW_WEB_DATA_DIR'] = tempfile.mkdtemp(prefix='twitter-runtime-web-')
 os.environ['TW_THROTTLE_DIR'] = tempfile.mkdtemp(prefix='twitter-runtime-throttle-')
 os.environ['TW_ACCOUNT_API_INTERVAL_SECONDS'] = '0.05'
 os.environ['TW_PROXY_API_INTERVAL_SECONDS'] = '0'
+os.environ['TW_MEDIA_DOWNLOAD_INTERVAL_SECONDS'] = '0.05'
 os.environ['TW_CRAWLER_REQUEST_RETRIES'] = '1'
 os.environ['TW_WEB_PUBLIC'] = '0'
 
@@ -28,12 +29,22 @@ class CrawlerRuntimeTest(unittest.TestCase):
         self.assertEqual(crawler_runtime.classify_exception(RuntimeError('HTTP 403')), 'auth_expired')
 
     def test_file_throttle_reserves_account_interval(self):
-        limits = crawler_runtime.RuntimeLimits(account_api_interval=0.05, proxy_api_interval=0, max_retries=1, backoff_base=0.1)
+        limits = crawler_runtime.RuntimeLimits(account_api_interval=0.05, proxy_api_interval=0, media_download_interval=0, max_retries=1, backoff_base=0.1)
         throttle = crawler_runtime.FileThrottle(base_dir=os.environ['TW_THROTTLE_DIR'], limits=limits)
         start = time.monotonic()
         throttle.wait('account-a')
         throttle.wait('account-a')
         elapsed = time.monotonic() - start
+        self.assertGreaterEqual(elapsed, 0.04)
+
+    def test_media_throttle_is_independent_from_account_interval(self):
+        limits = crawler_runtime.RuntimeLimits(account_api_interval=10, proxy_api_interval=0, media_download_interval=0.05, max_retries=1, backoff_base=0.1)
+        throttle = crawler_runtime.FileThrottle(base_dir=os.environ['TW_THROTTLE_DIR'], limits=limits)
+        start = time.monotonic()
+        throttle.wait(media_key='proxy-a')
+        throttle.wait(media_key='proxy-a')
+        elapsed = time.monotonic() - start
+        self.assertLess(elapsed, 1)
         self.assertGreaterEqual(elapsed, 0.04)
 
     def test_web_failure_classification_uses_structured_marker(self):
