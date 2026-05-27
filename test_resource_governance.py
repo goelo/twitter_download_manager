@@ -81,6 +81,32 @@ class ResourceGovernanceTest(unittest.TestCase):
         self.assertEqual(account['failure_count'], 1)
         self.assertEqual(proxy['failure_count'], 1)
 
+    def test_release_reserved_resources_on_queued_cancel(self):
+        with web_app.db() as conn:
+            account_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, last_checked_at, created_at, task_count, last_used_at)
+                values (?, ?, ?, ?, ?, 'active', ?, ?, 1, ?)
+                ''',
+                ('account', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'acct', web_app.now(), web_app.now(), web_app.now()),
+            ).lastrowid
+            task_id = conn.execute(
+                '''
+                insert into tasks (user_id, account_id, task_type, title, config_json, status, output_dir, log_path, created_at)
+                values (1, ?, 'benchmark_account', 'queued task', '{}', 'queued', ?, ?, ?)
+                ''',
+                (account_id, web_app.DATA_DIR.as_posix(), web_app.DATA_DIR.joinpath('t.log').as_posix(), web_app.now()),
+            ).lastrowid
+            task = conn.execute('select * from tasks where id = ?', (task_id,)).fetchone()
+
+        with web_app.db() as conn:
+            web_app.release_reserved_resources_in_conn(conn, task)
+            conn.execute("update tasks set status = 'cancelled', finished_at = ?, error = ?, last_error_type = ? where id = ?", (web_app.now(), '用户取消', 'cancelled', task_id))
+
+        with web_app.db() as conn:
+            account = conn.execute('select * from accounts where id = ?', (account_id,)).fetchone()
+        self.assertEqual(account['task_count'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()

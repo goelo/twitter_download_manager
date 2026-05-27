@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronRight, CircleUserRound, ClipboardList, Clock3, Eye, FileArchive, FolderKanban, Info, LogOut, Network, Plus, RefreshCcw, ShieldCheck, Play, Square, Target, TrendingUp, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronRight, CircleUserRound, ClipboardList, Clock3, Database, Eye, FileArchive, FolderKanban, Info, LogOut, Network, Plus, RefreshCcw, ShieldCheck, Play, Square, Target, TrendingUp, Zap } from 'lucide-react';
 import { Navigate, NavLink, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from './lib/api';
 import { Badge } from './components/ui/badge';
@@ -8,7 +8,7 @@ import { Button } from './components/ui/button';
 import { Card, CardContent, CardHeader } from './components/ui/card';
 import { Input } from './components/ui/input';
 import { Textarea } from './components/ui/textarea';
-import type { Account, BitBrowserImportResult, DashboardTask, OperationLog, ProxyItem, RunConfig, RunStatus, ScheduledTask, ScheduleFormValues, Task, TaskFormValues, TaskPreview, TaskType } from './lib/types';
+import type { Account, BitBrowserImportResult, DashboardHeatmap, DashboardTask, OperationLog, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, ScheduleFormValues, Task, TaskFormValues, TaskPreview, TaskType } from './lib/types';
 import { cn } from './lib/utils';
 import { getTaskTemplateById, taskTemplates, type TaskTemplate } from './lib/templates';
 import { defaultRunTimeRange, defaultTaskTimeRange, presetFromTimeRange, rangeFromPreset, splitTimeRange, timeRangeError, TIME_PRESETS, todayString, type TimePreset } from './lib/timeRange';
@@ -87,6 +87,18 @@ const DEFAULT_SCHEDULE_FORM: ScheduleFormValues = {
   proxy: '',
 };
 
+const DEFAULT_RESULT_DB_FORM: ResultDbFormValues = {
+  label: '采集结果库',
+  db_type: 'postgresql',
+  host: '',
+  port: 5432,
+  database_name: '',
+  username: '',
+  password: '',
+  ssl_enabled: false,
+  enabled: false,
+};
+
 const PROXY_PLACEHOLDER = 'gate.kookeey.info:1000:user:pass 或 socks5://user:pass@host:port';
 const WEEKDAYS = [
   { value: 1, label: '周一' },
@@ -130,6 +142,9 @@ function statusLabel(status: string) {
     stopped: '已停止',
     new: '新号保护',
     stable: '稳定',
+    untested: '未测试',
+    test_failed: '测试失败',
+    sync_failed: '同步失败',
   }[status] || status;
 }
 
@@ -155,6 +170,9 @@ function statusDescription(status: string) {
     idle: '当前没有运行中的任务。',
     stopping: '正在停止当前任务。',
     stopped: '任务已停止。',
+    untested: '连接尚未测试。',
+    test_failed: '连接测试失败。',
+    sync_failed: '结果同步失败。',
   }[status] || '';
 }
 
@@ -207,6 +225,7 @@ function Shell({ children }: { children: React.ReactNode }) {
             <NavItem to="/tasks/new" icon={<Plus className="h-4 w-4" />} label="新建任务" />
             <NavItem to="/schedules" icon={<CalendarClock className="h-4 w-4" />} label="定时任务" />
             <NavItem to="/operation-logs" icon={<ClipboardList className="h-4 w-4" />} label="运维日志" />
+            <NavItem to="/result-db" icon={<Database className="h-4 w-4" />} label="数据库" />
             <NavItem to="/accounts" icon={<ShieldCheck className="h-4 w-4" />} label="账号" />
             <NavItem to="/proxies" icon={<Network className="h-4 w-4" />} label="代理" />
           </nav>
@@ -324,6 +343,7 @@ function AuthenticatedApp() {
         <Route path="/tasks/:id" element={<TaskDetailRoute />} />
         <Route path="/schedules" element={<SchedulesPage />} />
         <Route path="/operation-logs" element={<OperationLogsPage />} />
+        <Route path="/result-db" element={<ResultDbPage />} />
         <Route path="/accounts" element={<AccountsPage />} />
         <Route path="/proxies" element={<ProxyPage />} />
         <Route path="*" element={<Navigate to="/run" replace />} />
@@ -397,6 +417,8 @@ function DashboardPage() {
         <DashboardTaskPanel title="当前队列" icon={<Activity className="h-4 w-4 text-[hsl(var(--primary-dark))]" />} tasks={activeTasks} emptyTitle="当前空闲" emptyText="没有运行中或排队中的任务。" actionLabel="新建任务" actionHref="/tasks/new" />
         <AttentionPanel tasks={attentionTasks} accountIssues={accountIssues} proxyIssues={proxyIssues} healthError={health?.last_error || ''} />
       </div>
+
+      <HeatmapPanel heatmap={dashboard.heatmap} />
 
       <div className="grid gap-3 md:grid-cols-4">
         <Metric title="采集记录" value={dashboard.totals.records} />
@@ -599,6 +621,75 @@ function AttentionNote({ label, value, href }: { label: string; value: string; h
       </div>
       <ArrowRight className="mt-1 h-4 w-4 shrink-0 text-[hsl(var(--primary-dark))]" />
     </button>
+  );
+}
+
+function heatmapLevel(count: number, maxCount: number) {
+  if (!count || !maxCount) return 'bg-[rgba(148,163,184,0.12)] border-[rgba(148,163,184,0.18)]';
+  const ratio = count / maxCount;
+  if (ratio >= 0.8) return 'bg-[rgba(249,115,22,0.92)] border-[rgba(249,115,22,0.95)]';
+  if (ratio >= 0.55) return 'bg-[rgba(251,191,36,0.78)] border-[rgba(251,191,36,0.82)]';
+  if (ratio >= 0.3) return 'bg-[rgba(14,165,233,0.62)] border-[rgba(14,165,233,0.68)]';
+  return 'bg-[rgba(59,130,246,0.34)] border-[rgba(59,130,246,0.42)]';
+}
+
+function HeatmapPanel({ heatmap }: { heatmap?: DashboardHeatmap }) {
+  const cells = heatmap?.cells || [];
+  const cellByKey = new Map(cells.map((cell) => [`${cell.date}-${cell.hour}`, cell]));
+  const dates = heatmap?.dates || [];
+  const hours = heatmap?.hours || Array.from({ length: 24 }, (_, index) => index);
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <BarChart3 className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
+            <h2 className="font-semibold">采集时间热力图</h2>
+          </div>
+          <div className="text-xs text-[hsl(var(--muted))]">
+            最近 {heatmap?.days || 7} 天 · 记录数 · 数据源：{heatmap?.source === 'external' ? '外部结果库' : '本地索引库'}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-auto">
+          <div className="min-w-[980px]">
+            <div className="grid gap-1" style={{ gridTemplateColumns: `88px repeat(${hours.length}, minmax(28px, 1fr))` }}>
+              <div />
+              {hours.map((hour) => (
+                <div key={hour} className="text-center text-[10px] text-[hsl(var(--muted))]">{hour}</div>
+              ))}
+              {dates.map((date) => (
+                <div key={date} className="contents">
+                  <div className="flex items-center text-xs text-[hsl(var(--muted))]">{date.slice(5)}</div>
+                  {hours.map((hour) => {
+                    const cell = cellByKey.get(`${date}-${hour}`) || { date, hour, count: 0, media_count: 0, task_count: 0 };
+                    return (
+                      <div
+                        key={`${date}-${hour}`}
+                        title={`${date} ${String(hour).padStart(2, '0')}:00 记录 ${cell.count} · 媒体 ${cell.media_count} · 任务 ${cell.task_count}`}
+                        className={cn('h-7 rounded border transition-colors', heatmapLevel(cell.count, heatmap?.max_count || 0))}
+                      />
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs text-[hsl(var(--muted))]">
+              <div>总记录 {heatmap?.total || 0} · 峰值 {heatmap?.max_count || 0}</div>
+              <div className="flex items-center gap-2">
+                <span>低</span>
+                <span className="h-3 w-6 rounded bg-[rgba(59,130,246,0.34)]" />
+                <span className="h-3 w-6 rounded bg-[rgba(14,165,233,0.62)]" />
+                <span className="h-3 w-6 rounded bg-[rgba(251,191,36,0.78)]" />
+                <span className="h-3 w-6 rounded bg-[rgba(249,115,22,0.92)]" />
+                <span>高</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -1739,6 +1830,150 @@ function OperationLogsPage() {
         <Button variant="secondary" onClick={() => refetch()}><RefreshCcw className="h-4 w-4" />刷新</Button>
       </ActionBar>
       <OperationLogTable logs={logs} />
+    </div>
+  );
+}
+
+function ResultDbPage() {
+  const queryClient = useQueryClient();
+  const { data } = useQuery({ queryKey: ['result-db'], queryFn: () => api.resultDbs(), refetchInterval: 10000 });
+  const configs = data?.configs || [];
+  const [form, setForm] = useState<ResultDbFormValues>(DEFAULT_RESULT_DB_FORM);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const saveConfig = useMutation({
+    mutationFn: () => api.saveResultDb(form),
+    onSuccess: () => {
+      setError('');
+      setMessage('数据库配置已保存');
+      setForm(DEFAULT_RESULT_DB_FORM);
+      queryClient.invalidateQueries({ queryKey: ['result-db'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+  const testConfig = useMutation({
+    mutationFn: (id: number) => api.testResultDb(id),
+    onSuccess: (res) => {
+      setError(res.ok ? '' : res.error);
+      setMessage(res.ok ? '连接测试通过，结果表已准备好' : '');
+      queryClient.invalidateQueries({ queryKey: ['result-db'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+  const toggleConfig = useMutation({
+    mutationFn: (id: number) => api.toggleResultDb(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['result-db'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+  const deleteConfig = useMutation({
+    mutationFn: (id: number) => api.deleteResultDb(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['result-db'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const editConfig = (config: ResultDbConfig) => {
+    setForm({
+      id: config.id,
+      label: config.label,
+      db_type: config.db_type,
+      host: config.host,
+      port: config.port,
+      database_name: config.database_name,
+      username: config.username,
+      password: '',
+      ssl_enabled: config.ssl_enabled,
+      enabled: config.enabled,
+    });
+    setMessage(config.has_password ? '已载入配置；如不修改密码，保存时会沿用原密码。' : '');
+  };
+
+  const updateDbType = (dbType: ResultDbFormValues['db_type']) => {
+    setForm((prev) => ({ ...prev, db_type: dbType, port: dbType === 'postgresql' ? 5432 : 3306 }));
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-2xl font-semibold">外部结果库</h2>
+        <p className="mt-1 text-sm text-[hsl(var(--muted))]">连接 PostgreSQL 或 MySQL 保存采集结果，任务队列和账号仍保留在本地 SQLite。</p>
+      </div>
+      {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
+      {message && <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2 text-sm text-[hsl(var(--muted))]">{message}</div>}
+      {!data?.credential_key_configured && (
+        <div className="rounded-lg border border-[hsl(var(--warning))] bg-[rgba(251,191,36,0.12)] px-3 py-2 text-sm">
+          未检测到 <span className="font-semibold">TW_WEB_CREDENTIAL_KEY</span>。本地模式会用会话密钥派生加密密钥；生产模式必须配置后才能保存密码。
+        </div>
+      )}
+      <Card>
+        <CardHeader><h3 className="font-semibold">{form.id ? `编辑连接 #${form.id}` : '新增连接'}</h3></CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 md:grid-cols-3">
+            <Field label="名称"><Input value={form.label} onChange={(e) => setForm((prev) => ({ ...prev, label: e.target.value }))} /></Field>
+            <Field label="类型">
+              <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.db_type} onChange={(e) => updateDbType(e.target.value as ResultDbFormValues['db_type'])}>
+                <option value="postgresql">PostgreSQL</option>
+                <option value="mysql">MySQL</option>
+              </select>
+            </Field>
+            <Field label="端口"><Input type="number" value={form.port} onChange={(e) => setForm((prev) => ({ ...prev, port: Number(e.target.value) }))} /></Field>
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            <Field label="主机"><Input value={form.host} onChange={(e) => setForm((prev) => ({ ...prev, host: e.target.value }))} placeholder="127.0.0.1" /></Field>
+            <Field label="数据库名"><Input value={form.database_name} onChange={(e) => setForm((prev) => ({ ...prev, database_name: e.target.value }))} /></Field>
+            <Field label="用户名"><Input value={form.username} onChange={(e) => setForm((prev) => ({ ...prev, username: e.target.value }))} /></Field>
+          </div>
+          <div className="grid gap-3 md:grid-cols-[1fr_auto_auto]">
+            <Field label="密码"><Input type="password" value={form.password} onChange={(e) => setForm((prev) => ({ ...prev, password: e.target.value }))} placeholder={form.id ? '留空则沿用原密码' : ''} /></Field>
+            <div className="flex items-end"><Check label="启用 SSL" checked={form.ssl_enabled} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, ssl_enabled: checked }))} /></div>
+            <div className="flex items-end"><Check label="设为启用" checked={form.enabled} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, enabled: checked }))} /></div>
+          </div>
+          <div className="flex justify-end gap-2">
+            {form.id && <Button variant="secondary" onClick={() => setForm(DEFAULT_RESULT_DB_FORM)}>取消编辑</Button>}
+            <Button onClick={() => saveConfig.mutate()} disabled={saveConfig.isPending || !form.host || !form.database_name || !form.username}>
+              保存连接
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardContent className="p-0">
+          <div className="overflow-auto">
+            <table className="w-full min-w-[1180px] border-collapse text-sm">
+              <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
+                <tr><th className="px-4 py-3">连接</th><th className="px-4 py-3">状态</th><th className="px-4 py-3">地址</th><th className="px-4 py-3">测试/同步</th><th className="px-4 py-3">错误</th><th className="px-4 py-3"></th></tr>
+              </thead>
+              <tbody>
+                {configs.map((config) => (
+                  <tr key={config.id} className="border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]">
+                    <td className="px-4 py-3"><div className="font-medium">{config.label}</div><div className="mt-1 text-xs text-[hsl(var(--muted))]">{config.db_type} · {config.username} · {config.has_password ? '已保存密码' : '无密码'}</div></td>
+                    <td className="px-4 py-3"><div className="space-y-1"><Badge tone={config.enabled ? 'success' : 'neutral'}>{config.enabled ? '已启用' : '未启用'}</Badge><div><Badge tone={statusTone(config.status)}>{statusLabel(config.status)}</Badge></div></div></td>
+                    <td className="px-4 py-3">{config.host}:{config.port}/{config.database_name}</td>
+                    <td className="px-4 py-3"><div className="space-y-1 text-xs text-[hsl(var(--muted))]"><div>测试：{config.last_tested_at || '-'}</div><div>同步：{config.last_synced_at || '-'}</div></div></td>
+                    <td className="max-w-[280px] truncate px-4 py-3 text-[hsl(var(--muted))]">{config.last_error || '-'}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex justify-end gap-2">
+                        <Button variant="secondary" size="sm" onClick={() => editConfig(config)}>编辑</Button>
+                        <Button variant="secondary" size="sm" onClick={() => testConfig.mutate(config.id)} disabled={testConfig.isPending}>测试</Button>
+                        <Button variant="secondary" size="sm" onClick={() => toggleConfig.mutate(config.id)} disabled={toggleConfig.isPending}>{config.enabled ? '停用' : '启用'}</Button>
+                        <Button variant="danger" size="sm" onClick={() => { if (window.confirm('确定删除这个外部数据库连接吗？')) deleteConfig.mutate(config.id); }} disabled={deleteConfig.isPending}>删除</Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {!configs.length && <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={6}>还没有外部数据库连接</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

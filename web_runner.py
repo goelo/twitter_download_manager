@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
 from proxy_utils import proxy_for_httpx
+from crawler_runtime import CrawlerError, classify_exception
 
 
 def parse_screen_name(value):
@@ -262,20 +263,28 @@ def main():
     print(f'输出目录: {output_dir}', flush=True)
     print(f'开始时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', flush=True)
 
-    if task_type == 'user_media':
-        run_user_media(config, cookie, output_dir)
-    elif task_type == 'benchmark_account':
-        run_benchmark_account(config, cookie, output_dir)
-    elif task_type == 'search':
-        run_search(config, cookie, output_dir)
-    elif task_type == 'text':
-        run_text(config, cookie, output_dir)
-    elif task_type == 'replies':
-        run_replies(config, cookie, output_dir)
-    elif task_type == 'profile':
-        run_profile(config, cookie, output_dir)
-    else:
-        raise RuntimeError(f'Unsupported task type: {task_type}')
+    try:
+        if task_type == 'user_media':
+            run_user_media(config, cookie, output_dir)
+        elif task_type == 'benchmark_account':
+            run_benchmark_account(config, cookie, output_dir)
+        elif task_type == 'search':
+            run_search(config, cookie, output_dir)
+        elif task_type == 'text':
+            run_text(config, cookie, output_dir)
+        elif task_type == 'replies':
+            run_replies(config, cookie, output_dir)
+        elif task_type == 'profile':
+            run_profile(config, cookie, output_dir)
+        else:
+            raise RuntimeError(f'Unsupported task type: {task_type}')
+    except CrawlerError as exc:
+        print(f'CRAWLER_ERROR_TYPE={exc.error_type}', flush=True)
+        print(str(exc), flush=True)
+        raise
+    except Exception as exc:
+        print(f'CRAWLER_ERROR_TYPE={classify_exception(exc)}', flush=True)
+        raise
 
 
 if __name__ == '__main__':

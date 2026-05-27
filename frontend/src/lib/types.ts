@@ -197,6 +197,7 @@ export type Dashboard = {
   active_tasks?: DashboardTask[];
   attention_tasks?: DashboardTask[];
   recent_outputs?: DashboardTask[];
+  heatmap?: DashboardHeatmap;
   recent_tasks: DashboardTask[];
   templates: Array<{
     name: string;
@@ -204,6 +205,58 @@ export type Dashboard = {
     payload: Record<string, unknown>;
   }>;
   compliance_notes: string[];
+};
+
+export type DashboardHeatmapCell = {
+  date: string;
+  hour: number;
+  count: number;
+  media_count: number;
+  task_count: number;
+};
+
+export type DashboardHeatmap = {
+  metric: string;
+  granularity: string;
+  days: number;
+  source: 'local' | 'external';
+  dates: string[];
+  hours: number[];
+  max_count: number;
+  total: number;
+  cells: DashboardHeatmapCell[];
+};
+
+export type ResultDbConfig = {
+  id: number;
+  label: string;
+  db_type: 'postgresql' | 'mysql';
+  host: string;
+  port: number;
+  database_name: string;
+  username: string;
+  ssl_enabled: boolean;
+  enabled: boolean;
+  status: string;
+  last_tested_at: string | null;
+  last_synced_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+  has_password: boolean;
+};
+
+export type ResultDbFormValues = {
+  id?: number;
+  label: string;
+  db_type: 'postgresql' | 'mysql';
+  host: string;
+  port: number;
+  database_name: string;
+  username: string;
+  password: string;
+  ssl_enabled: boolean;
+  enabled: boolean;
 };
 
 export type HealthStatus = {

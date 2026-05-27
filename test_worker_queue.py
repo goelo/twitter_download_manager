@@ -98,6 +98,23 @@ class WorkerQueueTest(unittest.TestCase):
         self.assertEqual(media['status'], 'downloaded')
         self.assertEqual(media['byte_size'], 3)
 
+    def test_update_task_progress_from_log_is_monotonic(self):
+        account_id = self.add_account()
+        task_id = self.add_task(account_id, 'progress-task')
+        with web_app.db() as conn:
+            task = conn.execute('select * from tasks where id = ?', (task_id,)).fetchone()
+            conn.execute('update tasks set api_calls = 5, download_count = 4, progress_done = 4 where id = ?', (task_id,))
+        log_path = Path(task['log_path'])
+        log_path.write_text('任务完成, 耗时 1.00 秒, API 调用 2 次, 下载 1 份文件\n', encoding='utf-8')
+
+        web_app.update_task_progress_from_log(task_id, log_path)
+
+        with web_app.db() as conn:
+            row = conn.execute('select api_calls, download_count, progress_done from tasks where id = ?', (task_id,)).fetchone()
+        self.assertEqual(row['api_calls'], 5)
+        self.assertEqual(row['download_count'], 4)
+        self.assertEqual(row['progress_done'], 4)
+
 
 if __name__ == '__main__':
     unittest.main()

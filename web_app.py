@@ -18,10 +18,13 @@ from pathlib import Path
 from threading import Thread
 
 import httpx
+from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import URL
 from starlette.middleware.sessions import SessionMiddleware
 
 from proxy_utils import normalize_proxy_url, redact_proxy_url as redact_proxy_value
@@ -158,6 +161,11 @@ WORKER_CONCURRENCY = max(1, int(os.environ.get('TW_WORKER_CONCURRENCY', '2') or 
 SQLITE_BUSY_TIMEOUT_MS = max(1000, int(os.environ.get('TW_SQLITE_BUSY_TIMEOUT_MS', '5000') or 5000))
 TASK_LEASE_TIMEOUT_SECONDS = max(60, int(os.environ.get('TW_TASK_LEASE_TIMEOUT_SECONDS', '300') or 300))
 TASK_HEARTBEAT_SECONDS = max(5, int(os.environ.get('TW_TASK_HEARTBEAT_SECONDS', '15') or 15))
+ACCOUNT_API_INTERVAL_SECONDS = float(os.environ.get('TW_ACCOUNT_API_INTERVAL_SECONDS', '2') or 2)
+PROXY_API_INTERVAL_SECONDS = float(os.environ.get('TW_PROXY_API_INTERVAL_SECONDS', '0.5') or 0.5)
+CRAWLER_REQUEST_RETRIES = max(1, int(os.environ.get('TW_CRAWLER_REQUEST_RETRIES', '3') or 3))
+CREDENTIAL_KEY = os.environ.get('TW_WEB_CREDENTIAL_KEY', '').strip()
+RESULT_DB_TYPES = {'postgresql', 'mysql'}
 health_state = {
     'running': False,
     'last_started_at': None,
@@ -349,6 +357,24 @@ def init_db():
                 created_at text not null,
                 unique(task_id, media_url, file_path)
             );
+            create table if not exists result_db_configs (
+                id integer primary key autoincrement,
+                label text not null,
+                db_type text not null,
+                host text not null,
+                port integer not null,
+                database_name text not null,
+                username text not null,
+                encrypted_password text,
+                ssl_enabled integer not null default 0,
+                enabled integer not null default 0,
+                status text not null default 'untested',
+                last_tested_at text,
+                last_synced_at text,
+                last_error text,
+                created_at text not null,
+                updated_at text not null
+            );
             '''
         )
         existing = conn.execute('select id from users where username = ?', (DEFAULT_ADMIN_USER,)).fetchone()
@@ -389,6 +415,7 @@ def init_db():
         conn.execute('create index if not exists idx_task_items_task on task_items(task_id)')
         conn.execute('create index if not exists idx_media_assets_task on media_assets(task_id)')
         conn.execute('create index if not exists idx_media_assets_url on media_assets(media_url)')
+        ensure_column(conn, 'result_db_configs', 'last_synced_at', 'text')
 
 
 def ensure_column(conn, table, column, definition):
@@ -558,6 +585,169 @@ def public_config(config):
     if clean.get('proxy'):
         clean['proxy'] = redact_proxy_url(clean['proxy'])
     return clean
+
+
+def credential_cipher():
+    if not CREDENTIAL_KEY:
+        if PUBLIC_MODE:
+            raise HTTPException(status_code=500, detail='生产模式需要配置 TW_WEB_CREDENTIAL_KEY 后才能保存外部数据库密码。')
+        seed = hashlib.sha256(SESSION_SECRET.encode('utf-8')).digest()
+        return Fernet(base64_urlsafe(seed))
+    try:
+        return Fernet(CREDENTIAL_KEY.encode('utf-8'))
+    except Exception:
+        seed = hashlib.sha256(CREDENTIAL_KEY.encode('utf-8')).digest()
+        return Fernet(base64_urlsafe(seed))
+
+
+def base64_urlsafe(value):
+    import base64
+    return base64.urlsafe_b64encode(value)
+
+
+def encrypt_secret(value):
+    if not value:
+        return ''
+    return credential_cipher().encrypt(str(value).encode('utf-8')).decode('utf-8')
+
+
+def decrypt_secret(value):
+    if not value:
+        return ''
+    try:
+        return credential_cipher().decrypt(str(value).encode('utf-8')).decode('utf-8')
+    except InvalidToken:
+        raise HTTPException(status_code=500, detail='外部数据库密码解密失败，请检查 TW_WEB_CREDENTIAL_KEY。')
+
+
+def result_db_payload(row):
+    return {
+        'id': row['id'],
+        'label': row['label'],
+        'db_type': row['db_type'],
+        'host': row['host'],
+        'port': row['port'],
+        'database_name': row['database_name'],
+        'username': row['username'],
+        'ssl_enabled': bool(row['ssl_enabled']),
+        'enabled': bool(row['enabled']),
+        'status': row['status'],
+        'last_tested_at': row['last_tested_at'],
+        'last_synced_at': row['last_synced_at'],
+        'last_error': row['last_error'],
+        'created_at': row['created_at'],
+        'updated_at': row['updated_at'],
+        'has_password': bool(row['encrypted_password']),
+    }
+
+
+def result_db_url(config, password=None):
+    db_type = config['db_type']
+    if db_type == 'postgresql':
+        driver = 'postgresql+psycopg'
+    elif db_type == 'mysql':
+        driver = 'mysql+pymysql'
+    else:
+        raise HTTPException(status_code=400, detail='外部数据库类型只支持 PostgreSQL 或 MySQL。')
+    query = {}
+    if db_type == 'postgresql' and int(config['ssl_enabled'] or 0):
+        query['sslmode'] = 'require'
+    return URL.create(
+        drivername=driver,
+        username=config['username'],
+        password=password if password is not None else decrypt_secret(config['encrypted_password']),
+        host=config['host'],
+        port=int(config['port']),
+        database=config['database_name'],
+        query=query,
+    )
+
+
+def result_db_engine(config):
+    connect_args = {}
+    if config['db_type'] == 'mysql' and int(config['ssl_enabled'] or 0):
+        connect_args['ssl'] = {}
+    return create_engine(result_db_url(config), pool_pre_ping=True, pool_recycle=1800, connect_args=connect_args)
+
+
+def get_enabled_result_db():
+    with db() as conn:
+        return conn.execute("select * from result_db_configs where enabled = 1 order by id desc limit 1").fetchone()
+
+
+def ensure_result_db_schema(engine):
+    ddl = [
+        '''
+        create table if not exists tw_result_items (
+            task_id integer not null,
+            item_id integer not null,
+            source_file varchar(512),
+            tweet_url text,
+            tweet_date timestamp null,
+            display_name varchar(512),
+            screen_name varchar(255),
+            content text,
+            favorite_count integer not null default 0,
+            retweet_count integer not null default 0,
+            reply_count integer not null default 0,
+            media_count integer not null default 0,
+            created_at timestamp not null,
+            primary key (task_id, item_id)
+        )
+        ''',
+        '''
+        create table if not exists tw_media_assets (
+            task_id integer not null,
+            asset_id integer not null,
+            task_item_id integer,
+            source_file varchar(512),
+            tweet_url text,
+            media_type varchar(64),
+            media_url text,
+            file_path text,
+            file_name varchar(512),
+            status varchar(64) not null default 'indexed',
+            error text,
+            byte_size bigint not null default 0,
+            created_at timestamp not null,
+            primary key (task_id, asset_id)
+        )
+        ''',
+        '''
+        create table if not exists tw_sync_batches (
+            id varchar(64) primary key,
+            task_id integer not null,
+            item_count integer not null default 0,
+            media_count integer not null default 0,
+            synced_at timestamp not null
+        )
+        ''',
+    ]
+    with engine.begin() as conn:
+        for statement in ddl:
+            conn.execute(text(statement))
+
+
+def normalize_ts(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    for fmt in ['%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%a %b %d %H:%M:%S %z %Y']:
+        try:
+            parsed = datetime.strptime(str(value), fmt)
+            return parsed.replace(tzinfo=None)
+        except ValueError:
+            continue
+    return None
+
+
+def result_db_config_by_id(config_id):
+    with db() as conn:
+        row = conn.execute('select * from result_db_configs where id = ?', (config_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail='Result database config not found')
+    return row
 
 
 def safe_details(details):
@@ -896,6 +1086,253 @@ def index_task_outputs(task):
     return {'items': item_count, 'media_assets': media_count}
 
 
+def task_index_rows(task_id):
+    with db() as conn:
+        items = [dict(row) for row in conn.execute('select * from task_items where task_id = ? order by id', (task_id,)).fetchall()]
+        media = [dict(row) for row in conn.execute('select * from media_assets where task_id = ? order by id', (task_id,)).fetchall()]
+    return items, media
+
+
+def sync_task_to_result_db(task):
+    config = get_enabled_result_db()
+    if not config:
+        return {'skipped': True, 'message': '未启用外部结果库'}
+    items, media = task_index_rows(task['id'])
+    engine = result_db_engine(config)
+    ensure_result_db_schema(engine)
+    item_rows = [
+        {
+            'task_id': row['task_id'],
+            'item_id': row['id'],
+            'source_file': row['source_file'],
+            'tweet_url': row['tweet_url'],
+            'tweet_date': normalize_ts(row['tweet_date']),
+            'display_name': row['display_name'],
+            'screen_name': row['screen_name'],
+            'content': row['content'],
+            'favorite_count': row['favorite_count'],
+            'retweet_count': row['retweet_count'],
+            'reply_count': row['reply_count'],
+            'media_count': row['media_count'],
+            'created_at': normalize_ts(row['created_at']) or datetime.now(),
+        }
+        for row in items
+    ]
+    media_rows = [
+        {
+            'task_id': row['task_id'],
+            'asset_id': row['id'],
+            'task_item_id': row['task_item_id'],
+            'source_file': row['source_file'],
+            'tweet_url': row['tweet_url'],
+            'media_type': row['media_type'],
+            'media_url': row['media_url'],
+            'file_path': row['file_path'],
+            'file_name': row['file_name'],
+            'status': row['status'],
+            'error': row['error'],
+            'byte_size': row['byte_size'],
+            'created_at': normalize_ts(row['created_at']) or datetime.now(),
+        }
+        for row in media
+    ]
+    with engine.begin() as conn:
+        conn.execute(text('delete from tw_media_assets where task_id = :task_id'), {'task_id': task['id']})
+        conn.execute(text('delete from tw_result_items where task_id = :task_id'), {'task_id': task['id']})
+        if item_rows:
+            conn.execute(
+                text(
+                    '''
+                    insert into tw_result_items
+                      (task_id, item_id, source_file, tweet_url, tweet_date, display_name, screen_name, content,
+                       favorite_count, retweet_count, reply_count, media_count, created_at)
+                    values
+                      (:task_id, :item_id, :source_file, :tweet_url, :tweet_date, :display_name, :screen_name, :content,
+                       :favorite_count, :retweet_count, :reply_count, :media_count, :created_at)
+                    '''
+                ),
+                item_rows,
+            )
+        if media_rows:
+            conn.execute(
+                text(
+                    '''
+                    insert into tw_media_assets
+                      (task_id, asset_id, task_item_id, source_file, tweet_url, media_type, media_url, file_path,
+                       file_name, status, error, byte_size, created_at)
+                    values
+                      (:task_id, :asset_id, :task_item_id, :source_file, :tweet_url, :media_type, :media_url, :file_path,
+                       :file_name, :status, :error, :byte_size, :created_at)
+                    '''
+                ),
+                media_rows,
+            )
+        conn.execute(
+            text(
+                '''
+                delete from tw_sync_batches where id = :id
+                '''
+            ),
+            {'id': f'task-{task["id"]}'},
+        )
+        conn.execute(
+            text(
+                '''
+                insert into tw_sync_batches (id, task_id, item_count, media_count, synced_at)
+                values (:id, :task_id, :item_count, :media_count, :synced_at)
+                '''
+            ),
+            {
+                'id': f'task-{task["id"]}',
+                'task_id': task['id'],
+                'item_count': len(item_rows),
+                'media_count': len(media_rows),
+                'synced_at': datetime.now(),
+            },
+        )
+    with db() as conn:
+        conn.execute(
+            "update result_db_configs set status = 'active', last_synced_at = ?, last_error = null, updated_at = ? where id = ?",
+            (now(), now(), config['id']),
+        )
+    return {'skipped': False, 'items': len(item_rows), 'media_assets': len(media_rows)}
+
+
+def safe_sync_task_to_result_db(task):
+    try:
+        result = sync_task_to_result_db(task)
+        if not result.get('skipped'):
+            append_operation_log(
+                'info',
+                'result_db_synced',
+                f'外部结果库同步完成: {result["items"]} 条记录, {result["media_assets"]} 个媒体',
+                task_id=task['id'],
+                schedule_id=task['schedule_id'] if 'schedule_id' in task.keys() else None,
+                details=result,
+            )
+        return result
+    except Exception as exc:
+        message = redact_sensitive(str(exc))
+        with db() as conn:
+            config = conn.execute('select id from result_db_configs where enabled = 1 order by id desc limit 1').fetchone()
+            if config:
+                conn.execute(
+                    "update result_db_configs set status = 'sync_failed', last_error = ?, updated_at = ? where id = ?",
+                    (message, now(), config['id']),
+                )
+        append_operation_log(
+            'warning',
+            'result_db_sync_failed',
+            f'外部结果库同步失败: {message}',
+            task_id=task['id'],
+            schedule_id=task['schedule_id'] if 'schedule_id' in task.keys() else None,
+            error_type='result_db_sync_failed',
+        )
+        return {'skipped': True, 'error': message}
+
+
+def heatmap_dates(days=7):
+    today = datetime.now().date()
+    return [today - timedelta(days=offset) for offset in range(days - 1, -1, -1)]
+
+
+def build_heatmap_from_datetimes(records, days=7, source='local'):
+    dates = heatmap_dates(days)
+    date_keys = [date.strftime('%Y-%m-%d') for date in dates]
+    buckets = {(date_key, hour): {'count': 0, 'media_count': 0, 'task_ids': set()} for date_key in date_keys for hour in range(24)}
+    start = datetime.combine(dates[0], datetime.min.time())
+    end = datetime.combine(dates[-1] + timedelta(days=1), datetime.min.time())
+    for record in records:
+        dt = record.get('dt')
+        if not dt or dt < start or dt >= end:
+            continue
+        key = (dt.strftime('%Y-%m-%d'), dt.hour)
+        if key not in buckets:
+            continue
+        buckets[key]['count'] += int(record.get('count') or 1)
+        buckets[key]['media_count'] += int(record.get('media_count') or 0)
+        if record.get('task_id'):
+            buckets[key]['task_ids'].add(record['task_id'])
+    cells = []
+    max_count = 0
+    total = 0
+    for date_key in date_keys:
+        for hour in range(24):
+            bucket = buckets[(date_key, hour)]
+            count = bucket['count']
+            max_count = max(max_count, count)
+            total += count
+            cells.append({
+                'date': date_key,
+                'hour': hour,
+                'count': count,
+                'media_count': bucket['media_count'],
+                'task_count': len(bucket['task_ids']),
+            })
+    return {
+        'metric': 'records',
+        'granularity': 'day_hour',
+        'days': days,
+        'source': source,
+        'dates': date_keys,
+        'hours': list(range(24)),
+        'max_count': max_count,
+        'total': total,
+        'cells': cells,
+    }
+
+
+def local_result_heatmap(days=7):
+    records = []
+    start = datetime.combine(heatmap_dates(days)[0], datetime.min.time())
+    with db() as conn:
+        rows = conn.execute(
+            '''
+            select task_id, coalesce(tweet_date, created_at) as activity_at, media_count
+            from task_items
+            where datetime(created_at) >= datetime(?)
+               or datetime(tweet_date) >= datetime(?)
+            ''',
+            (start.strftime('%Y-%m-%d %H:%M:%S'), start.strftime('%Y-%m-%d %H:%M:%S')),
+        ).fetchall()
+    for row in rows:
+        records.append({
+            'dt': normalize_ts(row['activity_at']),
+            'task_id': row['task_id'],
+            'media_count': row['media_count'],
+        })
+    return build_heatmap_from_datetimes(records, days=days, source='local')
+
+
+def external_result_heatmap(config, days=7):
+    start = datetime.combine(heatmap_dates(days)[0], datetime.min.time())
+    engine = result_db_engine(config)
+    ensure_result_db_schema(engine)
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                '''
+                select task_id, coalesce(tweet_date, created_at) as activity_at, media_count
+                from tw_result_items
+                where created_at >= :start_at or tweet_date >= :start_at
+                '''
+            ),
+            {'start_at': start},
+        ).mappings().all()
+    records = [{'dt': normalize_ts(row['activity_at']) if not isinstance(row['activity_at'], datetime) else row['activity_at'], 'task_id': row['task_id'], 'media_count': row['media_count']} for row in rows]
+    return build_heatmap_from_datetimes(records, days=days, source='external')
+
+
+def dashboard_heatmap(days=7):
+    config = get_enabled_result_db()
+    if config:
+        try:
+            return external_result_heatmap(config, days=days)
+        except Exception as exc:
+            append_operation_log('warning', 'result_db_heatmap_fallback', f'外部结果库热力图读取失败，已回退本地数据: {redact_sensitive(str(exc))}', error_type='result_db_heatmap_failed')
+    return local_result_heatmap(days=days)
+
+
 def parse_datetime(value):
     if not value:
         return None
@@ -1193,56 +1630,110 @@ def proxy_selection_score(proxy):
     return failures * 5 - successes
 
 
+def select_account_for_task_in_conn(conn, preferred_account_id=0):
+    placeholders = ','.join('?' for _ in ACCOUNT_USABLE_STATUSES)
+    if preferred_account_id:
+        account = conn.execute(
+            f"select * from accounts where id = ? and status in ({placeholders})",
+            (preferred_account_id, *ACCOUNT_USABLE_STATUSES),
+        ).fetchone()
+        if not account:
+            raise HTTPException(status_code=400, detail='X 账号会话失效，请重新登录或更新 Cookie。')
+        if not account_available_for_task(conn, account):
+            raise HTTPException(status_code=400, detail='所选 X 账号正在冷却或已达到配额，请稍后再试或使用自动分配。')
+        return account
+    rows = conn.execute(f"select * from accounts where status in ({placeholders})", tuple(ACCOUNT_USABLE_STATUSES)).fetchall()
+    candidates = [row for row in rows if account_available_for_task(conn, row)]
+    if not candidates:
+        raise HTTPException(status_code=400, detail='没有可分配的 X 账号：可用账号可能正在冷却、过于频繁使用或已达到今日配额。')
+    return sorted(candidates, key=lambda row: account_selection_score(conn, row))[0]
+
+
 def select_account_for_task(preferred_account_id=0):
     with db() as conn:
-        placeholders = ','.join('?' for _ in ACCOUNT_USABLE_STATUSES)
-        if preferred_account_id:
-            account = conn.execute(
-                f"select * from accounts where id = ? and status in ({placeholders})",
-                (preferred_account_id, *ACCOUNT_USABLE_STATUSES),
-            ).fetchone()
-            if not account:
-                raise HTTPException(status_code=400, detail='X 账号会话失效，请重新登录或更新 Cookie。')
-            if not account_available_for_task(conn, account):
-                raise HTTPException(status_code=400, detail='所选 X 账号正在冷却或已达到配额，请稍后再试或使用自动分配。')
-            return account
-        rows = conn.execute(f"select * from accounts where status in ({placeholders})", tuple(ACCOUNT_USABLE_STATUSES)).fetchall()
-        candidates = [row for row in rows if account_available_for_task(conn, row)]
-        if not candidates:
-            raise HTTPException(status_code=400, detail='没有可分配的 X 账号：可用账号可能正在冷却、过于频繁使用或已达到今日配额。')
-        return sorted(candidates, key=lambda row: account_selection_score(conn, row))[0]
+        return select_account_for_task_in_conn(conn, preferred_account_id)
+
+
+def select_proxy_for_task_in_conn(conn, preferred_proxy_id=0, manual_proxy=''):
+    if preferred_proxy_id:
+        proxy = conn.execute("select * from proxies where id = ? and enabled = 1 and status = 'active'", (preferred_proxy_id,)).fetchone()
+        if not proxy:
+            raise HTTPException(status_code=400, detail='所选代理不可用，请先到代理页检测或换一个代理。')
+        if not proxy_available_for_task(proxy):
+            raise HTTPException(status_code=400, detail='所选代理正在冷却，请稍后再试或使用自动分配。')
+        return proxy
+    if manual_proxy:
+        return None
+    rows = conn.execute("select * from proxies where enabled = 1 and status = 'active'").fetchall()
+    candidates = [row for row in rows if proxy_available_for_task(row)]
+    if not candidates:
+        return None
+    return sorted(candidates, key=proxy_selection_score)[0]
 
 
 def select_proxy_for_task(preferred_proxy_id=0, manual_proxy=''):
-    if manual_proxy:
-        return None
     with db() as conn:
-        if preferred_proxy_id:
-            proxy = conn.execute("select * from proxies where id = ? and enabled = 1 and status = 'active'", (preferred_proxy_id,)).fetchone()
-            if not proxy:
-                raise HTTPException(status_code=400, detail='所选代理不可用，请先到代理页检测或换一个代理。')
-            if not proxy_available_for_task(proxy):
-                raise HTTPException(status_code=400, detail='所选代理正在冷却，请稍后再试或使用自动分配。')
-            return proxy
-        rows = conn.execute("select * from proxies where enabled = 1 and status = 'active'").fetchall()
-        candidates = [row for row in rows if proxy_available_for_task(row)]
-        if not candidates:
-            return None
-        return sorted(candidates, key=proxy_selection_score)[0]
+        return select_proxy_for_task_in_conn(conn, preferred_proxy_id, manual_proxy)
+
+
+def reserve_resources_for_task_in_conn(conn, account_id, proxy_id=None, reserved_at=None):
+    reserved_at = reserved_at or now()
+    conn.execute(
+        '''
+        update accounts
+        set last_used_at = ?, task_count = coalesce(task_count, 0) + 1
+        where id = ?
+        ''',
+        (reserved_at, account_id),
+    )
+    if proxy_id:
+        conn.execute('update proxies set last_used_at = ? where id = ?', (reserved_at, proxy_id))
 
 
 def reserve_resources_for_task(account_id, proxy_id=None):
     with db() as conn:
+        reserve_resources_for_task_in_conn(conn, account_id, proxy_id)
+
+
+def release_reserved_resources_in_conn(conn, task):
+    if not task or task['status'] != 'queued':
+        return
+    account_id = task['account_id']
+    proxy_id = task['proxy_id'] if 'proxy_id' in task.keys() else None
+    task_id = task['id']
+    if account_id:
         conn.execute(
             '''
             update accounts
-            set last_used_at = ?, task_count = coalesce(task_count, 0) + 1
+            set task_count = max(coalesce(task_count, 0) - 1, 0)
             where id = ?
             ''',
-            (now(), account_id),
+            (account_id,),
         )
-        if proxy_id:
-            conn.execute('update proxies set last_used_at = ? where id = ?', (now(), proxy_id))
+        previous = conn.execute(
+            '''
+            select max(created_at) as last_used_at
+            from tasks
+            where account_id = ? and id != ? and status != 'cancelled'
+            ''',
+            (account_id, task_id),
+        ).fetchone()
+        conn.execute('update accounts set last_used_at = ? where id = ?', (previous['last_used_at'] if previous else None, account_id))
+    if proxy_id:
+        previous = conn.execute(
+            '''
+            select max(created_at) as last_used_at
+            from tasks
+            where proxy_id = ? and id != ? and status != 'cancelled'
+            ''',
+            (proxy_id, task_id),
+        ).fetchone()
+        conn.execute('update proxies set last_used_at = ? where id = ?', (previous['last_used_at'] if previous else None, proxy_id))
+
+
+def release_reserved_resources(task):
+    with db() as conn:
+        release_reserved_resources_in_conn(conn, task)
 
 
 def validate_proxy(proxy_url):
@@ -1898,30 +2389,50 @@ def create_queued_task(user_id, account_id, config, resource_mode='manual', sche
     task_dir = TASKS_DIR / datetime.now().strftime('%Y%m%d_%H%M%S_%f')
     task_dir.mkdir(parents=True, exist_ok=True)
     log_path = task_dir / 'task.log'
-    proxy_id = int(config.get('proxy_id') or 0) or None
+    requested_account_id = int(account_id or 0)
+    requested_proxy_id = int(config.get('proxy_id') or 0)
     with db() as conn:
-        cursor = conn.execute(
-            '''
-            insert into tasks
-              (user_id, account_id, proxy_id, schedule_id, resource_mode, task_type, title, config_json, status, output_dir, log_path, created_at)
-            values (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
-            ''',
-            (
-                user_id,
-                account_id,
-                proxy_id,
-                schedule_id,
-                resource_mode,
-                config['task_type'],
-                title_from_config(config),
-                json.dumps(config, ensure_ascii=False),
-                str(task_dir),
-                str(log_path),
-                now(),
-            ),
-        )
-        task_id = cursor.lastrowid
-    reserve_resources_for_task(account_id, proxy_id)
+        try:
+            conn.execute('begin immediate')
+            account = select_account_for_task_in_conn(conn, requested_account_id)
+            proxy = select_proxy_for_task_in_conn(conn, requested_proxy_id, config.get('proxy') or '')
+            account_id = account['id']
+            if proxy:
+                config['proxy'] = normalize_proxy_url(proxy['proxy'])
+                config['proxy_id'] = proxy['id']
+            elif requested_proxy_id:
+                config['proxy_id'] = requested_proxy_id
+            else:
+                config.pop('proxy_id', None)
+            proxy_id = int(config.get('proxy_id') or 0) or None
+            reserved_at = now()
+            cursor = conn.execute(
+                '''
+                insert into tasks
+                  (user_id, account_id, proxy_id, schedule_id, resource_mode, task_type, title, config_json, status, output_dir, log_path, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
+                ''',
+                (
+                    user_id,
+                    account_id,
+                    proxy_id,
+                    schedule_id,
+                    resource_mode,
+                    config['task_type'],
+                    title_from_config(config),
+                    json.dumps(config, ensure_ascii=False),
+                    str(task_dir),
+                    str(log_path),
+                    reserved_at,
+                ),
+            )
+            task_id = cursor.lastrowid
+            reserve_resources_for_task_in_conn(conn, account_id, proxy_id, reserved_at)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            remove_task_files({'output_dir': str(task_dir)})
+            raise
     append_operation_log(
         'info',
         'task_created',
@@ -2024,6 +2535,17 @@ def health_status_payload():
 
 def classify_failure(log_text, return_code):
     lower = log_text.lower()
+    structured = re.search(r'CRAWLER_ERROR_TYPE=([a-z_]+)', log_text)
+    if structured:
+        error_type = structured.group(1)
+        messages = {
+            'rate_limited': 'X API 次数已超限',
+            'auth_expired': 'X 会话可能失效或权限不足',
+            'network_failed': '网络或代理异常',
+            'target_unavailable': '目标不存在、不可访问或内容权限不足',
+            'api_changed': 'X 接口结构可能已变化',
+        }
+        return error_type, messages.get(error_type, f'任务失败, 退出码 {return_code}')
     if 'rate limit exceeded' in lower or 'api次数已超限' in log_text:
         return 'rate_limited', 'X API 次数已超限'
     if 'auth' in lower or 'ct0' in lower or 'cookie' in lower or '401' in lower or '403' in lower or '认证' in log_text:
@@ -2051,6 +2573,29 @@ def parse_log_metric(log_text, metric):
         if match:
             return int(match.group(1))
     return 0
+
+
+def update_task_progress_from_log(task_id, log_path):
+    try:
+        log_text = read_log(log_path, 50000)
+        api_calls = parse_log_metric(log_text, 'api_calls')
+        downloads = parse_log_metric(log_text, 'downloads')
+        media_seen = len(re.findall(r'下载完成|Saved Path|\\.jpg|\\.png|\\.mp4', log_text))
+        progress_done = max(downloads, media_seen)
+        with db() as conn:
+            conn.execute(
+                '''
+                update tasks
+                set api_calls = max(coalesce(api_calls, 0), ?),
+                    download_count = max(coalesce(download_count, 0), ?),
+                    progress_done = max(coalesce(progress_done, 0), ?),
+                    progress_total = max(coalesce(progress_total, 0), ?)
+                where id = ?
+                ''',
+                (api_calls, downloads, progress_done, progress_done, task_id),
+            )
+    except Exception:
+        pass
 
 
 def reset_stale_task_leases():
@@ -2230,6 +2775,11 @@ def run_task(task, worker_id='worker-1'):
         '--output',
         str(output_dir),
     ]
+    child_env = os.environ.copy()
+    child_env.setdefault('TW_THROTTLE_DIR', str(DATA_DIR / 'throttle'))
+    child_env.setdefault('TW_ACCOUNT_API_INTERVAL_SECONDS', str(ACCOUNT_API_INTERVAL_SECONDS))
+    child_env.setdefault('TW_PROXY_API_INTERVAL_SECONDS', str(PROXY_API_INTERVAL_SECONDS))
+    child_env.setdefault('TW_CRAWLER_REQUEST_RETRIES', str(CRAWLER_REQUEST_RETRIES))
     with open(log_path, 'a', encoding='utf-8', errors='replace') as log_file:
         log_file.write(f'[{now()}] 启动任务 #{task["id"]}: {task["title"]}\n')
         log_file.flush()
@@ -2242,6 +2792,7 @@ def run_task(task, worker_id='worker-1'):
             text=True,
             encoding='utf-8',
             errors='replace',
+            env=child_env,
         )
         with db() as conn:
             conn.execute(
@@ -2263,6 +2814,7 @@ def run_task(task, worker_id='worker-1'):
                     pass
                 return_code = proc.wait()
                 break
+            update_task_progress_from_log(task['id'], log_path)
             time.sleep(TASK_HEARTBEAT_SECONDS)
         log_file.write(f'\n[{now()}] 子进程退出码: {return_code}\n')
         append_operation_log('info' if return_code == 0 else 'error', 'task_process_exit', f'子进程退出码: {return_code}', task_id=task['id'], schedule_id=task.get('schedule_id'), details={'return_code': return_code})
@@ -2339,6 +2891,7 @@ def run_task(task, worker_id='worker-1'):
     record_task_resource_result(task, status, error_type)
     if refreshed:
         write_summary_report(refreshed)
+        safe_sync_task_to_result_db(refreshed)
     append_operation_log(
         'info' if status == 'completed' else 'error',
         'task_finished',
@@ -2737,6 +3290,7 @@ def dashboard_payload(user):
         'accounts': {row['status']: row['count'] for row in accounts},
         'status_counts': status_counts,
         'resources': resources,
+        'heatmap': dashboard_heatmap(7),
         'active_tasks': active_tasks,
         'attention_tasks': attention_tasks,
         'recent_outputs': recent_outputs,
@@ -2789,19 +3343,20 @@ async def create_task(request: Request, user=Depends(require_user)):
     requested_account_id = int(form.get('account_id') or 0)
     try:
         config = build_task_config(form)
-        account = select_account_for_task(requested_account_id)
-        account_id = account['id']
-        proxy = select_proxy_for_task(int(form.get('proxy_id') or 0), config.get('proxy') or '')
-        if proxy:
-            config['proxy'] = normalize_proxy_url(proxy['proxy'])
-            config['proxy_id'] = proxy['id']
-        else:
-            apply_proxy_selection(config, form.get('proxy_id'))
+        if form.get('proxy_id'):
+            config['proxy_id'] = int(form.get('proxy_id') or 0)
+        elif config.get('proxy'):
+            config['proxy'] = normalize_proxy_url(config.get('proxy'))
         validate_task_config(config)
-    except HTTPException as exc:
+    except (HTTPException, ValueError) as exc:
         config = locals().get('config') or {'time_range': form.get('time_range') or task_default_time_range()}
-        return templates.TemplateResponse('task_form.html', {'request': request, 'user': user, 'accounts': accounts, 'error': exc.detail, 'default_time_range': config.get('time_range') or task_default_time_range()}, status_code=400)
-    create_queued_task(user['id'], account_id, config, resource_mode='manual' if requested_account_id else 'auto')
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        return templates.TemplateResponse('task_form.html', {'request': request, 'user': user, 'accounts': accounts, 'error': detail, 'default_time_range': config.get('time_range') or task_default_time_range()}, status_code=400)
+    try:
+        create_queued_task(user['id'], requested_account_id, config, resource_mode='manual' if requested_account_id else 'auto')
+    except (HTTPException, ValueError) as exc:
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        return templates.TemplateResponse('task_form.html', {'request': request, 'user': user, 'accounts': accounts, 'error': detail, 'default_time_range': config.get('time_range') or task_default_time_range()}, status_code=400)
     return RedirectResponse('/tasks', status_code=303)
 
 
@@ -2824,6 +3379,7 @@ def delete_task_row(task_id, user):
     if task['status'] in {'queued', 'running'}:
         if task['status'] == 'queued':
             with db() as conn:
+                release_reserved_resources_in_conn(conn, task)
                 conn.execute("update tasks set status = 'cancelled', finished_at = ?, error = ?, last_error_type = ?, locked_by = null, locked_at = null, heartbeat_at = null where id = ?", (now(), '用户删除任务', 'cancelled', task_id))
             append_operation_log('warning', 'task_cancelled', '用户删除排队任务', task_id=task_id, schedule_id=task['schedule_id'] if 'schedule_id' in task.keys() else None, error_type='cancelled')
         elif task['process_id']:
@@ -2867,6 +3423,7 @@ def cancel_task(task_id: int, user=Depends(require_user)):
     task = get_task_or_404(task_id, user)
     if task['status'] == 'queued':
         with db() as conn:
+            release_reserved_resources_in_conn(conn, task)
             conn.execute("update tasks set status = 'cancelled', finished_at = ?, error = ?, last_error_type = ?, locked_by = null, locked_at = null, heartbeat_at = null where id = ?", (now(), '用户取消', 'cancelled', task_id))
         append_operation_log('warning', 'task_cancelled', '用户取消排队任务', task_id=task_id, schedule_id=task['schedule_id'] if 'schedule_id' in task.keys() else None, error_type='cancelled')
     elif task['status'] == 'running' and task['process_id']:
@@ -3235,12 +3792,107 @@ def api_operation_logs(user=Depends(require_api_user), task_id: int | None = Non
     return {'logs': [operation_log_payload(row) for row in rows]}
 
 
+@app.get('/api/result-db')
+def api_result_db_configs(user=Depends(require_api_admin)):
+    with db() as conn:
+        rows = conn.execute('select * from result_db_configs order by id desc').fetchall()
+    return {'configs': [result_db_payload(row) for row in rows], 'credential_key_configured': bool(CREDENTIAL_KEY)}
+
+
+@app.post('/api/result-db')
+async def api_save_result_db_config(request: Request, user=Depends(require_api_admin)):
+    data = await request.json()
+    config_id = int(data.get('id') or 0)
+    db_type = str(data.get('db_type') or '').strip().lower()
+    if db_type not in RESULT_DB_TYPES:
+        raise HTTPException(status_code=400, detail='数据库类型只能是 postgresql 或 mysql')
+    label = (data.get('label') or f'{db_type} 结果库').strip()
+    host = (data.get('host') or '').strip()
+    database_name = (data.get('database_name') or '').strip()
+    username = (data.get('username') or '').strip()
+    password = str(data.get('password') or '')
+    port = int(data.get('port') or (5432 if db_type == 'postgresql' else 3306))
+    if not host or not database_name or not username:
+        raise HTTPException(status_code=400, detail='主机、数据库名和用户名不能为空')
+    if PUBLIC_MODE and password and not CREDENTIAL_KEY:
+        raise HTTPException(status_code=400, detail='生产模式保存密码前需要配置 TW_WEB_CREDENTIAL_KEY')
+    encrypted_password = encrypt_secret(password) if password else None
+    ssl_enabled = 1 if data.get('ssl_enabled') else 0
+    enabled = 1 if data.get('enabled') else 0
+    with db() as conn:
+        if enabled:
+            conn.execute('update result_db_configs set enabled = 0')
+        if config_id:
+            existing = conn.execute('select * from result_db_configs where id = ?', (config_id,)).fetchone()
+            if not existing:
+                raise HTTPException(status_code=404, detail='Result database config not found')
+            conn.execute(
+                '''
+                update result_db_configs
+                set label = ?, db_type = ?, host = ?, port = ?, database_name = ?, username = ?,
+                    encrypted_password = coalesce(?, encrypted_password), ssl_enabled = ?, enabled = ?, updated_at = ?
+                where id = ?
+                ''',
+                (label, db_type, host, port, database_name, username, encrypted_password, ssl_enabled, enabled, now(), config_id),
+            )
+            row = conn.execute('select * from result_db_configs where id = ?', (config_id,)).fetchone()
+        else:
+            cursor = conn.execute(
+                '''
+                insert into result_db_configs
+                  (label, db_type, host, port, database_name, username, encrypted_password, ssl_enabled, enabled, status, created_at, updated_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'untested', ?, ?)
+                ''',
+                (label, db_type, host, port, database_name, username, encrypted_password, ssl_enabled, enabled, now(), now()),
+            )
+            row = conn.execute('select * from result_db_configs where id = ?', (cursor.lastrowid,)).fetchone()
+    return {'config': result_db_payload(row)}
+
+
+@app.post('/api/result-db/{config_id}/test')
+def api_test_result_db_config(config_id: int, user=Depends(require_api_admin)):
+    config = result_db_config_by_id(config_id)
+    try:
+        engine = result_db_engine(config)
+        with engine.connect() as conn:
+            conn.execute(text('select 1'))
+        ensure_result_db_schema(engine)
+        with db() as conn:
+            conn.execute("update result_db_configs set status = 'active', last_tested_at = ?, last_error = null, updated_at = ? where id = ?", (now(), now(), config_id))
+            row = conn.execute('select * from result_db_configs where id = ?', (config_id,)).fetchone()
+        return {'ok': True, 'config': result_db_payload(row), 'error': ''}
+    except Exception as exc:
+        message = redact_sensitive(str(exc))
+        with db() as conn:
+            conn.execute("update result_db_configs set status = 'test_failed', last_tested_at = ?, last_error = ?, updated_at = ? where id = ?", (now(), message, now(), config_id))
+            row = conn.execute('select * from result_db_configs where id = ?', (config_id,)).fetchone()
+        return {'ok': False, 'config': result_db_payload(row), 'error': message}
+
+
+@app.post('/api/result-db/{config_id}/toggle')
+def api_toggle_result_db_config(config_id: int, user=Depends(require_api_admin)):
+    config = result_db_config_by_id(config_id)
+    enabled = 0 if config['enabled'] else 1
+    with db() as conn:
+        if enabled:
+            conn.execute('update result_db_configs set enabled = 0')
+        conn.execute('update result_db_configs set enabled = ?, updated_at = ? where id = ?', (enabled, now(), config_id))
+        row = conn.execute('select * from result_db_configs where id = ?', (config_id,)).fetchone()
+    return {'config': result_db_payload(row)}
+
+
+@app.delete('/api/result-db/{config_id}')
+def api_delete_result_db_config(config_id: int, user=Depends(require_api_admin)):
+    result_db_config_by_id(config_id)
+    with db() as conn:
+        conn.execute('delete from result_db_configs where id = ?', (config_id,))
+    return {'ok': True}
+
+
 @app.post('/api/tasks')
 async def api_create_task(request: Request, user=Depends(require_api_user)):
     data = await request.json()
     requested_account_id = int(data.get('account_id') or 0)
-    account = select_account_for_task(requested_account_id)
-    account_id = account['id']
     config = {
         'task_type': data.get('task_type'),
         'targets': data.get('targets') or '',
@@ -3264,14 +3916,20 @@ async def api_create_task(request: Request, user=Depends(require_api_user)):
             'search_advanced': data.get('search_advanced') or '',
         }
     )
-    proxy = select_proxy_for_task(int(data.get('proxy_id') or 0), config.get('proxy') or '')
-    if proxy:
-        config['proxy'] = normalize_proxy_url(proxy['proxy'])
-        config['proxy_id'] = proxy['id']
-    else:
-        apply_proxy_selection(config, data.get('proxy_id'))
-    validate_task_config(config)
-    task_id = create_queued_task(user['id'], account_id, config, resource_mode='manual' if requested_account_id else 'auto')
+    try:
+        if data.get('proxy_id'):
+            config['proxy_id'] = int(data.get('proxy_id') or 0)
+        elif config.get('proxy'):
+            config['proxy'] = normalize_proxy_url(config.get('proxy'))
+        validate_task_config(config)
+    except (HTTPException, ValueError) as exc:
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        raise HTTPException(status_code=400, detail=detail)
+    try:
+        task_id = create_queued_task(user['id'], requested_account_id, config, resource_mode='manual' if requested_account_id else 'auto')
+    except (HTTPException, ValueError) as exc:
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        raise HTTPException(status_code=400, detail=detail)
     with db() as conn:
         task = conn.execute('select tasks.*, users.username from tasks join users on users.id = tasks.user_id where tasks.id = ?', (task_id,)).fetchone()
     return {'task': task_payload(task, include_config=True)}
@@ -3294,6 +3952,7 @@ def api_cancel_task(task_id: int, user=Depends(require_api_user)):
     task = get_task_or_404(task_id, user)
     if task['status'] == 'queued':
         with db() as conn:
+            release_reserved_resources_in_conn(conn, task)
             conn.execute("update tasks set status = 'cancelled', finished_at = ?, error = ?, last_error_type = ?, locked_by = null, locked_at = null, heartbeat_at = null where id = ?", (now(), '用户取消', 'cancelled', task_id))
     elif task['status'] == 'running' and task['process_id']:
         try:

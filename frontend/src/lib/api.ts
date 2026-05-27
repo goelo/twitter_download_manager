@@ -1,4 +1,4 @@
-import type { Account, ApiError, BitBrowserImportResponse, Dashboard, HealthStatus, OperationLog, ProxyItem, RunConfig, RunStatus, ScheduledTask, Task } from './types';
+import type { Account, ApiError, BitBrowserImportResponse, Dashboard, HealthStatus, OperationLog, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, Task } from './types';
 
 export type LocalBrowserLoginResponse = {
   status: string;
@@ -58,6 +58,11 @@ export const api = {
     const suffix = query.toString() ? `?${query.toString()}` : '';
     return request<{ logs: OperationLog[] }>(`/api/operation-logs${suffix}`);
   },
+  resultDbs: () => request<{ configs: ResultDbConfig[]; credential_key_configured: boolean }>('/api/result-db'),
+  saveResultDb: (payload: ResultDbFormValues) => request<{ config: ResultDbConfig }>('/api/result-db', { method: 'POST', body: JSON.stringify(payload) }),
+  testResultDb: (id: number) => request<{ ok: boolean; config: ResultDbConfig; error: string }>(`/api/result-db/${id}/test`, { method: 'POST' }),
+  toggleResultDb: (id: number) => request<{ config: ResultDbConfig }>(`/api/result-db/${id}/toggle`, { method: 'POST' }),
+  deleteResultDb: (id: number) => request<{ ok: boolean }>(`/api/result-db/${id}`, { method: 'DELETE' }),
   accounts: () => request<{ accounts: Account[] }>('/api/accounts'),
   addAccount: (payload: Record<string, unknown>) => request<{ ok: boolean }>('/api/accounts/manual', { method: 'POST', body: JSON.stringify(payload) }),
   importBitBrowserAccounts: (payload: { base_url: string; browser_ids: string[] }) => request<BitBrowserImportResponse>('/api/accounts/import/bitbrowser', { method: 'POST', body: JSON.stringify(payload) }),

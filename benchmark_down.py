@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from crawler_runtime import AsyncCrawlerClient, CrawlerClient, CrawlerError, classify_exception
 from proxy_utils import proxy_for_httpx
 from url_utils import quote_url
 
@@ -123,6 +124,7 @@ class BenchmarkAccountDownloader:
         self.cookie = cookie
         self.output_dir = output_dir
         self.proxy = proxy_for_httpx(config.get('proxy'))
+        self.proxy_value = config.get('proxy') or ''
         self.tweet_limit = int(config.get('tweet_limit') or 50)
         self.has_video = bool(config.get('has_video', True))
         self.has_retweet = bool(config.get('has_retweet'))
@@ -139,10 +141,11 @@ class BenchmarkAccountDownloader:
             'cookie': cookie,
             'x-csrf-token': re.findall(r'ct0=(.*?);', cookie)[0],
         }
+        self.client = CrawlerClient(cookie=cookie, proxy=self.proxy_value, account_key=cookie, headers=self.headers)
 
     def get_user_info(self, screen_name):
         url = 'https://twitter.com/i/api/graphql/xc8f1g7BYqr6VTzTbvNlGw/UserByScreenName?variables={"screen_name":"' + screen_name + '","withSafetyModeUserFields":false}&features={"hidden_profile_likes_enabled":false,"hidden_profile_subscriptions_enabled":false,"responsive_web_graphql_exclude_directive_enabled":true,"verified_phone_label_enabled":false,"subscriptions_verification_info_verified_since_enabled":true,"highlights_tweets_tab_ui_enabled":true,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_skip_user_profile_image_extensions_enabled":false,"responsive_web_graphql_timeline_navigation_enabled":true}&fieldToggles={"withAuxiliaryUserLabels":false}'
-        response = httpx.get(quote_url(url), headers=self.headers, proxy=self.proxy).text
+        response = self.client.get_text(url)
         self.request_count += 1
         raw_data = json.loads(response)
         result = raw_data['data']['user']['result']
@@ -238,8 +241,13 @@ class BenchmarkAccountDownloader:
 
     async def download_media(self, media_jobs):
         semaphore = asyncio.Semaphore(self.max_concurrent_requests)
-        limits = httpx.Limits(max_connections=self.max_concurrent_requests, max_keepalive_connections=self.max_concurrent_requests)
-        client = httpx.AsyncClient(proxy=self.proxy, limits=limits)
+        client = AsyncCrawlerClient(
+            cookie=self.cookie,
+            proxy=self.proxy_value,
+            account_key=self.cookie,
+            headers=self.headers,
+            max_connections=self.max_concurrent_requests,
+        )
 
         async def down_save(url, file_path):
             attempts = 0
@@ -247,7 +255,6 @@ class BenchmarkAccountDownloader:
                 try:
                     async with semaphore:
                         response = await client.get(quote_url(url), timeout=(3.05, 16))
-                        response.raise_for_status()
                     with open(file_path, 'wb') as f:
                         f.write(response.content)
                     self.download_count += 1
@@ -257,7 +264,7 @@ class BenchmarkAccountDownloader:
                     if attempts >= 10:
                         print(f'{file_path} 下载失败，已跳过: {exc}', flush=True)
                         return
-                    print(f'{file_path} 第{attempts}次下载失败，正在重试', flush=True)
+                    print(f'{file_path} 第{attempts}次下载失败，正在重试: {classify_exception(exc)}', flush=True)
 
         try:
             await asyncio.gather(*[asyncio.create_task(down_save(url, file_path)) for url, file_path in media_jobs])
@@ -325,7 +332,7 @@ class BenchmarkAccountDownloader:
         try:
             while saved_tweets < self.tweet_limit:
                 url = self.tweet_url(user['rest_id'], cursor)
-                response = httpx.get(quote_url(url), headers=self.headers, proxy=self.proxy).text
+                response = self.client.get_text(url)
                 self.request_count += 1
                 raw_data = json.loads(response)
                 entries, next_cursor = self.extract_entries(raw_data, cursor)

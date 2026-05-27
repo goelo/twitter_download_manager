@@ -15,6 +15,7 @@ from tag_down import hash_save_token
 from tag_down import stamp2time
 from transaction_generate import get_transaction_id
 from transaction_generate import get_url_path
+from crawler_runtime import CrawlerClient
 
 ##########配置区域##########
 
@@ -147,6 +148,7 @@ class Reply_down():
         self.cursor = ''
 
         self.ct = get_transaction_id()
+        self.client = CrawlerClient(cookie=cookie, proxy=proxy, headers=self._headers)
 
         if self.get_querystring():  #指定用户
             self.folder_path = os.getcwd() + os.sep + del_special_char(self.user_name) + os.sep
@@ -173,7 +175,8 @@ class Reply_down():
             _path = get_url_path(url)
             url = quote_url(url)
             self._headers['x-client-transaction-id'] = self.ct.generate_transaction_id(method='GET', path=_path)
-            response = httpx.get(url, headers=self._headers, proxy=proxy_for_httpx(proxy)).text
+            self.client.headers = dict(self._headers)
+            response = self.client.get_text(url, quote=False)
             try:
                 raw_data = json.loads(response)
             except Exception:
@@ -285,7 +288,8 @@ class Reply_down():
             _path = get_url_path(url)
             url = quote_url(url)
             self._headers['x-client-transaction-id'] = self.ct.generate_transaction_id(method='GET', path=_path)
-            response = httpx.get(url, headers=_headers, proxy=proxy_for_httpx(proxy)).text
+            self.client.headers = dict(_headers)
+            response = self.client.get_text(url, quote=False)
             try:
                 raw_data = json.loads(response)
             except Exception:

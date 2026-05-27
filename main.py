@@ -8,6 +8,7 @@ import json
 import sys
 
 sys.path.append('.')
+from crawler_runtime import CrawlerClient, classify_exception
 from user_info import User_info
 from csv_gen import csv_gen
 from md_gen import md_gen
@@ -126,12 +127,21 @@ _headers['cookie'] = settings['cookie']
 
 request_count = 0    #请求次数计数
 down_count = 0      #下载图片数计数
+crawler_client = None
+
+
+def active_crawler_client():
+    global crawler_client
+    if crawler_client is None:
+        crawler_client = CrawlerClient(cookie=settings['cookie'], proxy=settings.get('proxy') or '', headers=_headers)
+    crawler_client.headers = dict(_headers)
+    return crawler_client
 
 def get_other_info(_user_info):
     url = 'https://twitter.com/i/api/graphql/xc8f1g7BYqr6VTzTbvNlGw/UserByScreenName?variables={"screen_name":"' + _user_info.screen_name + '","withSafetyModeUserFields":false}&features={"hidden_profile_likes_enabled":false,"hidden_profile_subscriptions_enabled":false,"responsive_web_graphql_exclude_directive_enabled":true,"verified_phone_label_enabled":false,"subscriptions_verification_info_verified_since_enabled":true,"highlights_tweets_tab_ui_enabled":true,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_skip_user_profile_image_extensions_enabled":false,"responsive_web_graphql_timeline_navigation_enabled":true}&fieldToggles={"withAuxiliaryUserLabels":false}'
     try:
         global request_count
-        response = httpx.get(quote_url(url), headers=_headers, proxy=proxies).text
+        response = active_crawler_client().get_text(url)
         request_count += 1
         raw_data = json.loads(response)
         _user_info.rest_id = raw_data['data']['user']['result']['rest_id']
@@ -140,6 +150,7 @@ def get_other_info(_user_info):
         _user_info.media_count = raw_data['data']['user']['result']['legacy']['media_count']
     except Exception as e:
         print('获取信息失败')
+        print(f'CRAWLER_ERROR_TYPE={classify_exception(e)}')
         print(e)
         print(response)
         return False
@@ -272,7 +283,7 @@ def get_download_url(_user_info):
         url = url_top + url_bottom      #第一页,无cursor
     try:
         global request_count
-        response = httpx.get(quote_url(url), headers=_headers, proxy=proxies).text
+        response = active_crawler_client().get_text(url)
         request_count += 1
         try:
             raw_data = json.loads(response)
@@ -317,6 +328,7 @@ def get_download_url(_user_info):
             photo_lst.append(True)
     except Exception as e:
         print('获取推文信息错误')
+        print(f'CRAWLER_ERROR_TYPE={classify_exception(e)}')
         print(e)
         print(response)
         return False
