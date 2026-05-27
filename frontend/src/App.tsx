@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, AlertTriangle, ArrowRight, BarChart3, ChevronRight, CircleUserRound, Clock3, FileArchive, FolderKanban, Info, LogOut, Network, Plus, RefreshCcw, ShieldCheck, Play, Square, Target, TrendingUp, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, BarChart3, ChevronRight, CircleUserRound, Clock3, Eye, FileArchive, FolderKanban, Info, LogOut, Network, Plus, RefreshCcw, ShieldCheck, Play, Square, Target, TrendingUp, Zap } from 'lucide-react';
 import { Navigate, NavLink, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from './lib/api';
 import { Badge } from './components/ui/badge';
@@ -8,7 +8,7 @@ import { Button } from './components/ui/button';
 import { Card, CardContent, CardHeader } from './components/ui/card';
 import { Input } from './components/ui/input';
 import { Textarea } from './components/ui/textarea';
-import type { Account, BitBrowserImportResult, ProxyItem, RunConfig, RunStatus, Task, TaskFormValues, TaskType } from './lib/types';
+import type { Account, BitBrowserImportResult, ProxyItem, RunConfig, RunStatus, Task, TaskFormValues, TaskPreview, TaskType } from './lib/types';
 import { cn } from './lib/utils';
 import { getTaskTemplateById, taskTemplates, type TaskTemplate } from './lib/templates';
 import { defaultRunTimeRange, defaultTaskTimeRange, presetFromTimeRange, rangeFromPreset, splitTimeRange, timeRangeError, TIME_PRESETS, todayString, type TimePreset } from './lib/timeRange';
@@ -1143,6 +1143,8 @@ function TaskDetailPage({ id }: { id: number }) {
         </Card>
       </div>
 
+      <TaskPreviewPanel preview={task.preview} />
+
       <div className="grid gap-4 xl:grid-cols-2">
         <Card>
           <CardHeader><h3 className="font-semibold">配置</h3></CardHeader>
@@ -1182,6 +1184,122 @@ function TaskDetailPage({ id }: { id: number }) {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+
+const PREVIEW_COLUMNS: Array<{ label: string; keys: string[]; type?: 'text' | 'link' | 'media' | 'metrics' }> = [
+  { label: '时间', keys: ['Tweet Date', 'Reply Date'] },
+  { label: '作者', keys: ['Display Name', 'Replier Display Name'] },
+  { label: '用户名', keys: ['User Name', 'Replier User Name'] },
+  { label: '内容', keys: ['Tweet Content', 'Reply Content'], type: 'text' },
+  { label: '链接', keys: ['Tweet URL', 'Reply URL', 'Parent Tweet URL'], type: 'link' },
+  { label: '媒体', keys: ['Media URL'], type: 'media' },
+  { label: '互动', keys: ['Favorite Count', 'Reply Favorite Count', 'Retweet Count', 'Reply Retweet Count', 'Reply Count', 'Reply Reply Count'], type: 'metrics' },
+];
+
+function previewValue(row: Record<string, string>, keys: string[]) {
+  for (const key of keys) {
+    const value = row[key];
+    if (value) return value;
+  }
+  return '';
+}
+
+function PreviewLink({ value }: { value: string }) {
+  if (!value) return <span className="text-[hsl(var(--muted))]">-</span>;
+  return (
+    <a href={value} target="_blank" rel="noreferrer" className="inline-flex max-w-[220px] items-center gap-1 truncate text-[hsl(var(--primary-dark))] hover:text-[hsl(var(--text))]">
+      <span className="truncate">{value}</span>
+      <ArrowRight className="h-3.5 w-3.5 shrink-0" />
+    </a>
+  );
+}
+
+function PreviewMetrics({ row }: { row: Record<string, string> }) {
+  const favorites = previewValue(row, ['Favorite Count', 'Reply Favorite Count']);
+  const retweets = previewValue(row, ['Retweet Count', 'Reply Retweet Count']);
+  const replies = previewValue(row, ['Reply Count', 'Reply Reply Count']);
+  if (!favorites && !retweets && !replies) return <span className="text-[hsl(var(--muted))]">-</span>;
+  return <span className="whitespace-nowrap">{favorites || 0} / {retweets || 0} / {replies || 0}</span>;
+}
+
+function PreviewCell({ column, row }: { column: (typeof PREVIEW_COLUMNS)[number]; row: Record<string, string> }) {
+  if (column.type === 'link') {
+    return <PreviewLink value={previewValue(row, column.keys)} />;
+  }
+  if (column.type === 'media') {
+    const mediaUrl = previewValue(row, column.keys);
+    const mediaType = previewValue(row, ['Media Type']);
+    if (!mediaUrl && !mediaType) return <span className="text-[hsl(var(--muted))]">-</span>;
+    return (
+      <div className="max-w-[240px] space-y-1">
+        {mediaType && <div className="text-xs font-semibold text-[hsl(var(--muted))]">{mediaType}</div>}
+        <PreviewLink value={mediaUrl} />
+      </div>
+    );
+  }
+  if (column.type === 'metrics') {
+    return <PreviewMetrics row={row} />;
+  }
+  const value = previewValue(row, column.keys);
+  if (!value) return <span className="text-[hsl(var(--muted))]">-</span>;
+  if (column.type === 'text') {
+    return <div className="max-w-[420px] whitespace-pre-wrap break-words leading-6">{value}</div>;
+  }
+  return <span className="whitespace-nowrap">{value}</span>;
+}
+
+function TaskPreviewPanel({ preview }: { preview?: TaskPreview }) {
+  const rows = preview?.rows || [];
+  const hiddenCount = Math.max((preview?.total || 0) - rows.length, 0);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Eye className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
+            <h3 className="font-semibold">采集内容</h3>
+          </div>
+          <div className="text-xs text-[hsl(var(--muted))]">
+            共 {preview?.total || 0} 条，预览最新 {rows.length} 条
+            {hiddenCount > 0 ? `，另有 ${hiddenCount} 条请打包下载查看` : ''}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="p-0">
+        <div className="overflow-auto">
+          <table className="w-full min-w-[1080px] border-collapse text-sm">
+            <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
+              <tr>
+                {PREVIEW_COLUMNS.map((column) => (
+                  <th key={column.label} className="px-4 py-3">{column.label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, index) => (
+                <tr key={index} className="border-t border-[hsl(var(--line))] align-top hover:bg-[rgba(14,165,233,0.06)]">
+                  {PREVIEW_COLUMNS.map((column) => (
+                    <td key={column.label} className="px-4 py-3">
+                      <PreviewCell column={column} row={row} />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+              {!rows.length && (
+                <tr>
+                  <td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={PREVIEW_COLUMNS.length}>
+                    暂无采集内容
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

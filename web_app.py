@@ -360,7 +360,7 @@ def proxy_payload(proxy):
     }
 
 
-def task_payload(task, include_config=False, include_log=False, include_files=False):
+def task_payload(task, include_config=False, include_log=False, include_files=False, include_preview=False):
     summary = task_summary(task)
     payload = {
         'id': task['id'],
@@ -390,6 +390,8 @@ def task_payload(task, include_config=False, include_log=False, include_files=Fa
         payload['log'] = read_log(task['log_path'])
     if include_files:
         payload['files'] = task_files(task)
+    if include_preview:
+        payload['preview'] = task_preview(task)
     return payload
 
 
@@ -501,6 +503,53 @@ def csv_summary(output_dir):
         'replies': replies,
         'top_urls': top_urls,
     }
+
+
+def task_preview(task, limit=100):
+    output_dir = Path(task['output_dir'])
+    preview = {
+        'headers': [],
+        'rows': [],
+        'total': 0,
+        'csv_files': 0,
+    }
+    if not output_dir.exists():
+        return preview
+
+    headers_seen = []
+    rows_preview = []
+    for path in sorted(output_dir.rglob('*.csv')):
+        preview['csv_files'] += 1
+        try:
+            with open(path, 'r', encoding='utf-8-sig', errors='replace', newline='') as f:
+                rows = list(csv.reader(f))
+        except Exception:
+            continue
+
+        header_index, headers = locate_csv_header(rows)
+        if header_index is None:
+            continue
+
+        for header in headers:
+            if header and header not in headers_seen:
+                headers_seen.append(header)
+
+        for row in rows[header_index + 1:]:
+            if not row or not any(str(cell).strip() for cell in row):
+                continue
+            preview['total'] += 1
+            item = {}
+            for index, header in enumerate(headers):
+                if not header:
+                    continue
+                item[header] = row[index] if index < len(row) else ''
+            rows_preview.append(item)
+            if len(rows_preview) > limit:
+                rows_preview = rows_preview[-limit:]
+
+    preview['headers'] = headers_seen
+    preview['rows'] = rows_preview
+    return preview
 
 
 def task_summary(task):
@@ -2051,7 +2100,7 @@ async def api_create_task(request: Request, user=Depends(require_api_user)):
 @app.get('/api/tasks/{task_id}')
 def api_task_detail(task_id: int, user=Depends(require_api_user)):
     task = get_task_or_404(task_id, user)
-    return {'task': task_payload(task, include_config=True, include_log=True, include_files=True)}
+    return {'task': task_payload(task, include_config=True, include_log=True, include_files=True, include_preview=True)}
 
 
 @app.get('/api/tasks/{task_id}/files')
@@ -2078,7 +2127,7 @@ def api_cancel_task(task_id: int, user=Depends(require_api_user)):
             conn.execute("update tasks set status = 'cancelled', finished_at = ?, process_id = null, error = ?, last_error_type = ? where id = ?", (now(), '用户取消', 'cancelled', task_id))
     with db() as conn:
         refreshed = conn.execute('select tasks.*, users.username from tasks join users on users.id = tasks.user_id where tasks.id = ?', (task_id,)).fetchone()
-    return {'task': task_payload(refreshed, include_config=True, include_log=True, include_files=True)}
+    return {'task': task_payload(refreshed, include_config=True, include_log=True, include_files=True, include_preview=True)}
 
 
 @app.delete('/api/tasks/{task_id}')

@@ -48,6 +48,14 @@ export type Task = {
   log?: string;
   files?: Array<{ name: string; size: number }>;
   summary?: TaskSummary;
+  preview?: TaskPreview;
+};
+
+export type TaskPreview = {
+  headers: string[];
+  rows: Array<Record<string, string>>;
+  total: number;
+  csv_files: number;
 };
 
 export type TaskSummary = {
