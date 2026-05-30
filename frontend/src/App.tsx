@@ -215,6 +215,28 @@ function accountCapacityTone(level?: string): BadgeTone {
   return 'neutral';
 }
 
+function accountUsabilityLabel(account: Account) {
+  if (account.status === 'active') return '已验证可用';
+  if (account.status === 'unknown') return '可尝试 / 未确认';
+  if (account.status === 'check_failed') return '可尝试 / 检测异常';
+  return '不可用';
+}
+
+function accountUsabilityTone(account: Account): BadgeTone {
+  if (account.status === 'active') return 'success';
+  if (account.status === 'unknown' || account.status === 'check_failed') return 'warning';
+  return 'danger';
+}
+
+function accountUsabilityDescription(account: Account) {
+  if (account.status === 'active') return '检测通过，可自动分配任务。';
+  if (account.status === 'unknown') return '检测接口无法确认，不等于失效；任务仍可尝试使用。';
+  if (account.status === 'check_failed') return '检测请求异常，不等于失效；任务仍可尝试使用，但需要关注失败原因。';
+  if (account.status === 'expired' || account.status === 'auth_expired') return '会话已失效，需要重新登录后再使用。';
+  if (account.status === 'disabled') return '账号已停用，不会自动分配任务。';
+  return statusDescription(account.status) || '当前不会自动分配任务。';
+}
+
 function riskLevelLabel(level?: string) {
   return {
     healthy: '健康',
@@ -1887,7 +1909,7 @@ function TaskDetailPage({ id }: { id: number }) {
   const [resultQuery, setResultQuery] = useState('');
   const [resultSearch, setResultSearch] = useState('');
   const [mediaFilter, setMediaFilter] = useState('');
-  const resultLimit = 50;
+  const resultLimit = 10;
   const { data, isLoading } = useQuery({ queryKey: ['task', id], queryFn: () => api.task(id), refetchInterval: 4000 });
   const { data: resultData, isLoading: resultsLoading, refetch: refetchResults } = useQuery({
     queryKey: ['task-items', id, resultOffset, resultSearch, mediaFilter],
@@ -2295,7 +2317,7 @@ function TaskResultRow({ item, expanded, onToggle }: { item: TaskResultItem; exp
             <span className="text-xs text-[hsl(var(--muted))]">{item.tweet_date || item.created_at}</span>
             {item.source_file && <span className="truncate text-xs text-[hsl(var(--muted))]">{item.source_file}</span>}
           </div>
-          <div className="line-clamp-2 break-words text-sm leading-6 text-[hsl(var(--text))]">{item.content || '无正文内容'}</div>
+          <div className="truncate text-sm leading-6 text-[hsl(var(--text))]">{item.content || '无正文内容'}</div>
           <div className="truncate text-xs text-[hsl(var(--muted))]">{item.display_name || '-'} {item.screen_name || ''}</div>
         </div>
         <div className="flex items-center gap-3 text-sm text-[hsl(var(--muted))] md:justify-end">
@@ -3293,13 +3315,13 @@ function AccountsPage() {
         </CardContent>
       </Card>
       <div className="grid gap-3 md:grid-cols-3">
-        <InfoCard title="可用账号" value={String(accounts.filter((account) => USABLE_ACCOUNT_STATUSES.has(account.status)).length)} />
-        <InfoCard title="平均可用分" value={capacityAccounts.length ? String(averageCapacity) : '-'} />
+        <InfoCard title="可分配账号" value={String(accounts.filter((account) => USABLE_ACCOUNT_STATUSES.has(account.status)).length)} />
+        <InfoCard title="平均调度分" value={capacityAccounts.length ? String(averageCapacity) : '-'} />
         <InfoCard title="低分账号" value={String(lowCapacityCount)} />
       </div>
 
       <div className="grid gap-3 md:grid-cols-3">
-        <InfoCard title="待确认账号" value={String(accounts.filter((account) => account.status === 'unknown' || account.status === 'check_failed').length)} />
+        <InfoCard title="可尝试未确认账号" value={String(accounts.filter((account) => account.status === 'unknown' || account.status === 'check_failed').length)} />
         <InfoCard title="最近检测" value={accounts[0]?.last_checked_at || '-'} />
         <InfoCard title="估算剩余 API" value={String(accounts.reduce((sum, account) => sum + (account.capacity?.api_remaining_estimate || 0), 0))} />
       </div>
@@ -3391,7 +3413,7 @@ function AccountsPage() {
                   <th className="px-4 py-3">名称</th>
                   <th className="px-4 py-3">用户名</th>
                   <th className="px-4 py-3">状态</th>
-                  <th className="px-4 py-3">可用分</th>
+                  <th className="px-4 py-3">调度分</th>
                   <th className="px-4 py-3">治理</th>
                   <th className="px-4 py-3">检测时间</th>
                   <th className="px-4 py-3">失败原因</th>
@@ -3407,14 +3429,15 @@ function AccountsPage() {
                     <td className="px-4 py-3">
                       <div className="space-y-1">
                         <Badge tone={statusTone(account.status)}>{statusLabel(account.status)}</Badge>
-                        <div className="max-w-[220px] text-xs text-[hsl(var(--muted))]">{statusDescription(account.status) || '账号状态'}</div>
+                        <div className="max-w-[220px] text-xs text-[hsl(var(--muted))]">{accountUsabilityDescription(account)}</div>
                       </div>
                     </td>
                     <td className="px-4 py-3">
                       {account.capacity ? (
                         <div className="min-w-[180px] space-y-2">
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
                             <Badge tone={accountCapacityTone(account.capacity.level)}>{account.capacity.score} 分</Badge>
+                            <Badge tone={accountUsabilityTone(account)}>{accountUsabilityLabel(account)}</Badge>
                             <span className="text-xs text-[hsl(var(--muted))]">{account.capacity.reason}</span>
                           </div>
                           <div className="h-1.5 overflow-hidden rounded-full bg-[hsl(var(--panel-soft))]">
@@ -3450,7 +3473,7 @@ function AccountsPage() {
                       </div>
                     </td>
                     <td className="px-4 py-3">{account.last_checked_at || '-'}</td>
-                    <td className="max-w-[280px] truncate px-4 py-3 text-[hsl(var(--muted))]">{account.last_error || '-'}</td>
+                    <td className="max-w-[280px] truncate px-4 py-3 text-[hsl(var(--muted))]" title={account.last_error || ''}>{account.last_error || '-'}</td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-2">
                         <Button variant="secondary" size="sm" onClick={() => checkAccount.mutate(account.id)} disabled={checkAccount.isPending}>

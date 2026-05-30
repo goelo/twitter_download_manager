@@ -285,6 +285,33 @@ class ResourceGovernanceTest(unittest.TestCase):
         selected = web_app.select_account_for_task()
         self.assertEqual(selected['label'], 'high')
 
+    def test_uncertain_accounts_keep_usable_policy_but_clear_capacity_reason(self):
+        self.assertIn(web_app.ACCOUNT_UNKNOWN_STATUS, web_app.ACCOUNT_USABLE_STATUSES)
+        self.assertIn(web_app.ACCOUNT_CHECK_FAILED_STATUS, web_app.ACCOUNT_USABLE_STATUSES)
+        with web_app.db() as conn:
+            unknown = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, last_checked_at, created_at, tier)
+                values (?, ?, ?, ?, ?, ?, ?, ?, 'new')
+                ''',
+                ('unknown-account', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'unknownacct', web_app.ACCOUNT_UNKNOWN_STATUS, web_app.now(), web_app.now()),
+            ).lastrowid
+            check_failed = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, last_checked_at, created_at, tier, last_error)
+                values (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
+                ''',
+                ('check-failed-account', 'a2', 'c2', 'auth_token=a2; ct0=c2;', 'checkfailedacct', web_app.ACCOUNT_CHECK_FAILED_STATUS, web_app.now(), web_app.now(), 'HTTP 404'),
+            ).lastrowid
+            unknown_account = conn.execute('select * from accounts where id = ?', (unknown,)).fetchone()
+            check_failed_account = conn.execute('select * from accounts where id = ?', (check_failed,)).fetchone()
+
+            unknown_capacity = web_app.account_capacity_payload(unknown_account, conn)
+            check_failed_capacity = web_app.account_capacity_payload(check_failed_account, conn)
+
+        self.assertEqual(unknown_capacity['reason'], '检测未确认，可尝试使用')
+        self.assertEqual(check_failed_capacity['reason'], '检测异常，可尝试但需关注')
+
     def test_new_account_daily_limit_blocks_manual_selection(self):
         with web_app.db() as conn:
             cursor = conn.execute(

@@ -2660,7 +2660,12 @@ def account_capacity_payload(account, conn=None):
                 reason = '距离下次任务间隔不足'
             else:
                 level = 'healthy'
-                reason = '账号状态正常'
+                if status == ACCOUNT_UNKNOWN_STATUS:
+                    reason = '检测未确认，可尝试使用'
+                elif status == ACCOUNT_CHECK_FAILED_STATUS:
+                    reason = '检测异常，可尝试但需关注'
+                else:
+                    reason = '账号状态正常'
         payload = {
             'score': int(score),
             'level': level,
