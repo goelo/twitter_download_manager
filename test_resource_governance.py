@@ -392,6 +392,16 @@ class ResourceGovernanceTest(unittest.TestCase):
         with self.assertRaises(web_app.HTTPException):
             web_app.validate_task_config(invalid)
 
+    def test_automatic_concurrency_uses_conservative_base(self):
+        original_default = web_app.DEFAULT_MAX_CONCURRENT_REQUESTS
+        try:
+            web_app.DEFAULT_MAX_CONCURRENT_REQUESTS = 8
+            config = {'task_type': 'benchmark_account', 'targets': 'one', 'tweet_limit': 10}
+            web_app.validate_task_config(config)
+        finally:
+            web_app.DEFAULT_MAX_CONCURRENT_REQUESTS = original_default
+        self.assertEqual(config['max_concurrent_requests'], 2)
+
     def test_benchmark_task_title_omits_repeated_type_prefix(self):
         self.assertEqual(
             web_app.title_from_config({'task_type': 'benchmark_account', 'targets': 'arsenal'}),

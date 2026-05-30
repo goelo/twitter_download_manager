@@ -4998,7 +4998,7 @@ def automatic_max_concurrent_requests(config):
         return 1
     if task_type not in {'benchmark_account', 'user_media', 'search'}:
         return safe_max_concurrent_requests(None)
-    concurrency = DEFAULT_MAX_CONCURRENT_REQUESTS
+    concurrency = 2
     size = planned_task_size(config)
     if (
         (task_type == 'benchmark_account' and size >= 80)

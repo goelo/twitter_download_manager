@@ -48,7 +48,7 @@ class RunConfig(BaseModel):
     image_format: str = "orig"
     has_video: bool = True
     log_output: bool = True
-    max_concurrent_requests: int = Field(2, ge=1, le=3)
+    max_concurrent_requests: int | None = Field(None, ge=1, le=3)
     proxy: str = ""
     md_output: bool = False
     media_count_limit: int = Field(350, ge=0)
@@ -169,6 +169,7 @@ def build_runtime_settings(config: RunConfig) -> dict[str, Any]:
         user.strip().lstrip("@") for user in incoming["user_lst"].split(",") if user.strip()
     )
     data.update(incoming)
+    data["max_concurrent_requests"] = max(1, min(int(data.get("max_concurrent_requests") or 2), 3))
     if data.get("proxy"):
         data["proxy"] = normalize_proxy_url(data["proxy"])
     data["log_output"] = True

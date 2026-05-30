@@ -85,7 +85,7 @@ Open:
 http://127.0.0.1:7860
 ```
 
-The panel supports username, Cookie, output directory, date range, image format, concurrency, proxy and common download options.
+The panel supports username, Cookie, output directory, date range, image format, proxy and common download options. Media concurrency is selected automatically.
 
 ### Traditional Script Mode
 
@@ -206,7 +206,7 @@ Before enabling Caddy, confirm that host ports `80` and `443` are available, and
 | `image_format` | Image format. Supported values: `orig`, `jpg`, `png`. |
 | `has_video` | Download videos and GIFs. |
 | `log_output` | Print download logs during script execution. |
-| `max_concurrent_requests` | Maximum concurrent requests. Lower it when failures increase. |
+| `max_concurrent_requests` | Runtime media download concurrency. Web and panel tasks choose this automatically based on task size and account risk. |
 | `proxy` | Proxy address. Supports HTTP, SOCKS5 and `host:port:user:pass` formats. |
 | `md_output` | Generate Markdown records. |
 | `media_count_limit` | Limit the number of media links in a single Markdown file. `0` means unlimited. |
@@ -265,7 +265,7 @@ Recommended mitigation:
 
 - Disable `has_retweet` when retweets are not required.
 - Split large jobs into smaller date ranges.
-- Reduce `max_concurrent_requests` when downloads fail frequently.
+- Use smaller jobs when downloads fail frequently; Web and panel tasks automatically lower concurrency for account safety.
 - Refresh `auth_token` and `ct0` when the Cookie expires.
 - Verify proxy availability before running large tasks.
 - Use authorized accounts and avoid unnecessary repeated requests.
@@ -318,7 +318,7 @@ Do not write unescaped backslashes directly in JSON strings.
 
 ### Why do downloads become slow or fail?
 
-Common causes include account rate limits, unstable network, invalid proxy, expired Cookie, high concurrency or content that is not visible to the current account. Start by lowering concurrency, reducing the date range and checking the account session.
+Common causes include account rate limits, unstable network, invalid proxy, expired Cookie, large jobs or content that is not visible to the current account. Start by reducing the date range and checking the account session.
 
 ### How are duplicate downloads avoided?
 

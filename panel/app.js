@@ -13,7 +13,6 @@ const fields = [
   "user_lst",
   "cookie",
   "image_format",
-  "max_concurrent_requests",
   "proxy",
   "media_count_limit",
   "has_video",
@@ -80,7 +79,6 @@ function collectConfig() {
   data.likes = false;
   data.log_output = true;
   data.time_range = `${document.querySelector("#start_date").value}:${document.querySelector("#end_date").value}`;
-  data.max_concurrent_requests = Number(data.max_concurrent_requests || 8);
   data.media_count_limit = Number(data.media_count_limit || 0);
   return data;
 }
