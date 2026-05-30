@@ -249,12 +249,16 @@ function accountErrorSummary(account: Account) {
 function localHelperErrorMessage(err: unknown) {
   const raw = err instanceof Error ? err.message : String(err || '');
   if (!raw || raw === 'Failed to fetch' || raw.includes('Failed to fetch')) {
-    return '这台电脑未检测到本地授权助手。如果已经安装，点击“自动唤起并打开 Chrome”；如果没安装，先运行一次安装器。';
+    return '首次使用需要运行一次本地授权助手安装器；安装后以后点击“开始本地授权”即可自动打开 Chrome。';
   }
   if (raw.includes('NetworkError') || raw.includes('Load failed')) {
-    return '这台电脑未检测到本地授权助手。如果已经安装，点击“自动唤起并打开 Chrome”；如果没安装，先运行一次安装器。';
+    return '首次使用需要运行一次本地授权助手安装器；安装后以后点击“开始本地授权”即可自动打开 Chrome。';
   }
   return raw;
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function displayTaskTitle(task: Pick<Task, 'title' | 'task_type'> | Pick<DashboardTask, 'title' | 'task_type'> | Pick<DashboardHeatmapItem, 'task_title' | 'task_type'>) {
@@ -558,18 +562,27 @@ function DashboardPage() {
   const [selectedHeatmapCell, setSelectedHeatmapCell] = useState<{ date: string; hour: number } | null>(null);
   const { data, isLoading } = useQuery({ queryKey: ['dashboard', heatmapDays], queryFn: () => api.dashboard({ heatmap_days: heatmapDays }), refetchInterval: 5000 });
   const { data: health } = useQuery({ queryKey: ['health-status'], queryFn: () => api.healthStatus(), refetchInterval: 15000 });
+  const activeTasks = data?.active_tasks || data?.recent_tasks.filter((task) => task.status === 'running' || task.status === 'queued').slice(0, 5) || [];
+  const queueCount = data?.status_counts?.queued ?? Math.max(0, (data?.totals.running || 0) - activeTasks.filter((task) => task.status === 'running').length);
+  const runningCount = data?.status_counts?.running ?? activeTasks.filter((task) => task.status === 'running').length;
+  const hasActiveWork = runningCount > 0 || queueCount > 0 || activeTasks.length > 0;
   const { data: heatmapItems, isFetching: heatmapItemsLoading } = useQuery({
     queryKey: ['dashboard-heatmap-items', selectedHeatmapCell?.date, selectedHeatmapCell?.hour],
     queryFn: () => api.dashboardHeatmapItems({ date: selectedHeatmapCell!.date, hour: selectedHeatmapCell!.hour, limit: 50 }),
-    enabled: Boolean(selectedHeatmapCell),
-    refetchInterval: selectedHeatmapCell ? 5000 : false,
+    enabled: hasActiveWork && Boolean(selectedHeatmapCell),
+    refetchInterval: hasActiveWork && selectedHeatmapCell ? 5000 : false,
   });
   const dashboard = data;
+
+  useEffect(() => {
+    if (!hasActiveWork && selectedHeatmapCell) {
+      setSelectedHeatmapCell(null);
+    }
+  }, [hasActiveWork, selectedHeatmapCell]);
 
   if (isLoading && !dashboard) return <div className="text-sm text-[hsl(var(--muted))]">加载中...</div>;
   if (!dashboard) return <div>看板数据暂不可用</div>;
 
-  const activeTasks = dashboard.active_tasks || dashboard.recent_tasks.filter((task) => task.status === 'running' || task.status === 'queued').slice(0, 5);
   const attentionTasks = dashboard.attention_tasks || dashboard.recent_tasks.filter((task) => statusTone(task.status) === 'danger' || task.status === 'partial_failed').slice(0, 5);
   const recentOutputs = dashboard.recent_outputs || dashboard.recent_tasks.filter((task) => task.status === 'completed').slice(0, 6);
   const resourceAccounts = dashboard.resources?.accounts;
@@ -578,9 +591,6 @@ function DashboardPage() {
   const accountIssues = (resourceAccounts?.expired ?? health?.accounts?.expired ?? 0) + (resourceAccounts?.cooling ?? 0) + (resourceAccounts?.warning ?? 0);
   const proxyUsable = resourceProxies?.usable ?? (health?.proxies?.active ?? 0);
   const proxyIssues = (resourceProxies?.disabled ?? health?.proxies?.disabled ?? 0) + (resourceProxies?.cooling ?? 0) + (resourceProxies?.warning ?? 0);
-  const queueCount = dashboard.status_counts?.queued ?? Math.max(0, dashboard.totals.running - activeTasks.filter((task) => task.status === 'running').length);
-  const runningCount = dashboard.status_counts?.running ?? activeTasks.filter((task) => task.status === 'running').length;
-
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -619,20 +629,22 @@ function DashboardPage() {
         <AttentionPanel tasks={attentionTasks} accountIssues={accountIssues} proxyIssues={proxyIssues} healthError={health?.last_error || ''} />
       </div>
 
-      <HeatmapPanel
-        heatmap={dashboard.heatmap}
-        days={heatmapDays}
-        metric={heatmapMetric}
-        selectedCell={selectedHeatmapCell}
-        items={heatmapItems?.items || []}
-        itemsLoading={heatmapItemsLoading}
-        onDaysChange={(value) => {
-          setHeatmapDays(value);
-          setSelectedHeatmapCell(null);
-        }}
-        onMetricChange={setHeatmapMetric}
-        onCellSelect={setSelectedHeatmapCell}
-      />
+      {hasActiveWork && (
+        <HeatmapPanel
+          heatmap={dashboard.heatmap}
+          days={heatmapDays}
+          metric={heatmapMetric}
+          selectedCell={selectedHeatmapCell}
+          items={heatmapItems?.items || []}
+          itemsLoading={heatmapItemsLoading}
+          onDaysChange={(value) => {
+            setHeatmapDays(value);
+            setSelectedHeatmapCell(null);
+          }}
+          onMetricChange={setHeatmapMetric}
+          onCellSelect={setSelectedHeatmapCell}
+        />
+      )}
 
       <div className="grid gap-3 md:grid-cols-4">
         <Metric title="采集记录" value={dashboard.totals.records} />
@@ -3045,7 +3057,7 @@ function AccountsPage() {
       setBrowserLoginCallbackUrl(session.callback_url || '');
       setBrowserLoginExpiresIn(session.expires_in);
       setBrowserLoginStatus('helper_starting');
-      setBrowserLoginMessage('授权任务已在 VPS 创建，正在连接这台电脑上的本地登录助手...');
+      setBrowserLoginMessage('授权任务已在 VPS 创建，正在自动连接这台电脑上的本地授权助手...');
       try {
         const body = await openLocalHelperWindow(session);
         return {
@@ -3053,14 +3065,25 @@ function AccountsPage() {
           status: 'running',
           message: body.message || '已打开这台电脑的 Chrome，请在弹出的窗口完成 X 登录；Cookie 会自动回传到 VPS。',
         };
-      } catch (err) {
-        return {
-          ...session,
-          status: 'helper_missing',
-          message: err instanceof Error
-            ? `${localHelperErrorMessage(err)} VPS 授权任务已创建，不需要登录 VPS。`
-            : '这台电脑上的本地登录助手没有响应。请先启动本地登录助手，然后重试；VPS 授权任务已创建，不需要登录 VPS。',
-        };
+      } catch (firstErr) {
+        setBrowserLoginMessage('未检测到已运行的本地授权助手，正在尝试自动唤起...');
+        window.location.href = 'tw-login-helper://start';
+        await wait(1200);
+        try {
+          const body = await openLocalHelperWindow(session);
+          return {
+            ...session,
+            status: 'running',
+            message: body.message || '已自动唤起本地助手并打开 Chrome，请在弹出的窗口完成 X 登录；Cookie 会自动回传到 VPS。',
+          };
+        } catch (secondErr) {
+          const message = localHelperErrorMessage(secondErr instanceof Error ? secondErr : firstErr);
+          return {
+            ...session,
+            status: 'helper_missing',
+            message: `${message} VPS 授权任务已创建，不需要登录 VPS。`,
+          };
+        }
       }
     },
     onSuccess: (res) => {
@@ -3220,7 +3243,7 @@ function AccountsPage() {
       return;
     }
     setBrowserLoginStatus('helper_starting');
-    setBrowserLoginMessage('正在重新连接这台电脑上的本地登录助手...');
+    setBrowserLoginMessage('正在自动连接这台电脑上的本地授权助手...');
     try {
       const body = await openLocalHelperWindow({
         token: browserLoginToken,
@@ -3229,17 +3252,31 @@ function AccountsPage() {
       });
       setBrowserLoginStatus('running');
       setBrowserLoginMessage(body.message || '已打开这台电脑的 Chrome，请在弹出的窗口完成 X 登录；Cookie 会自动回传到 VPS。');
-    } catch (err) {
-      setBrowserLoginStatus('helper_missing');
-      setBrowserLoginMessage(err instanceof Error
-        ? `${localHelperErrorMessage(err)} VPS 授权任务仍在等待。`
-        : '这台电脑上的本地登录助手没有响应。请先启动本地登录助手，然后重试；VPS 授权任务仍在等待。');
+    } catch (firstErr) {
+      setBrowserLoginMessage('未检测到已运行的本地授权助手，正在尝试自动唤起...');
+      window.location.href = 'tw-login-helper://start';
+      await wait(1200);
+      try {
+        const body = await openLocalHelperWindow({
+          token: browserLoginToken,
+          callback_url: browserLoginCallbackUrl,
+          expires_in: browserLoginExpiresIn,
+        });
+        setBrowserLoginStatus('running');
+        setBrowserLoginMessage(body.message || '已自动唤起本地助手并打开 Chrome，请在弹出的窗口完成 X 登录；Cookie 会自动回传到 VPS。');
+      } catch (secondErr) {
+        setBrowserLoginStatus('helper_missing');
+        const message = localHelperErrorMessage(secondErr instanceof Error ? secondErr : firstErr);
+        setBrowserLoginMessage(`${message} VPS 授权任务仍在等待。`);
+      }
     }
   };
-  const launchInstalledLocalHelper = async () => {
-    window.location.href = 'tw-login-helper://start';
-    await new Promise((resolve) => window.setTimeout(resolve, 1200));
-    await retryLocalHelper();
+  const startOneClickLocalLogin = () => {
+    if (browserLoginToken && browserLoginCallbackUrl && ['helper_missing', 'pending'].includes(browserLoginStatus)) {
+      retryLocalHelper();
+      return;
+    }
+    browserLogin.mutate();
   };
 
   return (
@@ -3256,9 +3293,9 @@ function AccountsPage() {
           placeholder="登录账号备注"
           maxLength={80}
         />
-        <Button onClick={() => browserLogin.mutate()} disabled={browserLogin.isPending || browserLoginStatus === 'running'}>
+        <Button onClick={startOneClickLocalLogin} disabled={browserLogin.isPending || browserLoginStatus === 'running' || browserLoginStatus === 'helper_starting'}>
           <CircleUserRound className="h-4 w-4" />
-          本地授权登录
+          开始本地授权
         </Button>
       </ActionBar>
       {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
@@ -3279,14 +3316,9 @@ function AccountsPage() {
             {browserLoginStatus === 'helper_missing' ? (
               <div className="space-y-3 rounded-lg border border-[hsl(var(--warning))] bg-[rgba(251,191,36,0.12)] px-4 py-3 text-sm text-[hsl(var(--text))]">
                 <div className="font-semibold">这台电脑未检测到本地授权助手</div>
-                <div>{browserLoginMessage || '如果已经安装，直接自动唤起本地助手；第一次使用才需要运行一次安装器。'}</div>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <div className="rounded-md border border-[rgba(251,191,36,0.28)] bg-[rgba(15,23,42,0.38)] px-3 py-2">
-                    推荐：已安装用户直接自动唤起本地助手
-                  </div>
-                  <div className="rounded-md border border-[rgba(251,191,36,0.28)] bg-[rgba(15,23,42,0.38)] px-3 py-2">
-                    首次使用：运行一次安装器，之后不用重复下载
-                  </div>
+                <div>{browserLoginMessage || '首次使用需要运行一次安装器；安装后以后点击“开始本地授权”即可自动打开 Chrome。'}</div>
+                <div className="rounded-md border border-[rgba(251,191,36,0.28)] bg-[rgba(15,23,42,0.38)] px-3 py-2">
+                  安装器会注册本机授权助手和自动唤起协议；之后不需要重复下载。
                 </div>
               </div>
             ) : browserLoginStatus === 'completed' ? (
@@ -3305,11 +3337,11 @@ function AccountsPage() {
             <div className="flex flex-wrap gap-2">
               {browserLoginStatus === 'helper_missing' && (
                 <>
-                  <Button variant="secondary" size="sm" type="button" onClick={launchInstalledLocalHelper} disabled={browserLogin.isPending}>
-                    自动唤起并打开 Chrome
-                  </Button>
                   <Button variant="secondary" size="sm" type="button" onClick={() => { window.location.href = '/api/accounts/local-browser-login/helper/install'; }}>
-                    首次安装本地授权助手
+                    首次使用：安装本地授权助手
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={retryLocalHelper} disabled={browserLogin.isPending}>
+                    安装完成，继续授权
                   </Button>
                 </>
               )}
