@@ -79,6 +79,16 @@ nav {
   margin-bottom: 18px;
 }
 
+.page-head > div {
+  min-width: 0;
+}
+
+.page-subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 h1, h2 {
   margin: 0;
   line-height: 1.2;

@@ -3183,9 +3183,9 @@ function AccountsPage() {
 
   return (
     <div className="space-y-4">
-      <div>
+      <div className="min-w-0">
         <h2 className="text-2xl font-semibold">X 账号池</h2>
-        <p className="mt-1 text-sm text-[hsl(var(--muted))]">维护会话，任务从这里选账号。</p>
+        <p className="mt-1 overflow-hidden text-ellipsis whitespace-nowrap text-sm text-[hsl(var(--muted))]">维护会话，任务从这里选账号。</p>
       </div>
       <ActionBar>
         <Input
