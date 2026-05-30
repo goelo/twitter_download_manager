@@ -31,7 +31,7 @@ from sqlalchemy.engine import URL
 from starlette.middleware.sessions import SessionMiddleware
 
 from back.web.core.paths import FRONTEND_ASSETS_DIR, PROJECT_ROOT, STATIC_DIR, TEMPLATES_DIR
-from proxy_utils import normalize_proxy_url, redact_proxy_url as redact_proxy_value
+from back.shared.proxy_utils import normalize_proxy_url, redact_proxy_url as redact_proxy_value
 
 
 BASE_DIR = PROJECT_ROOT
@@ -3299,7 +3299,7 @@ def reserve_resources_for_task_in_conn(conn, account_id, proxy_id=None, reserved
     account = conn.execute('SELECT user_agent, accept_language FROM accounts WHERE id = ?', (account_id,)).fetchone()
     if account and not account['user_agent']:
         try:
-            from user_agent_pool import get_random_ua
+            from back.crawler.runtime.user_agent_pool import get_random_ua
             ua_data = get_random_ua()
             conn.execute(
                 'UPDATE accounts SET user_agent = ?, accept_language = ? WHERE id = ?',
@@ -3809,7 +3809,7 @@ def start_main_process(config: dict):
     env['PYTHONIOENCODING'] = 'utf-8'
 
     process = subprocess.Popen(
-        [str(python_exe), 'main.py'],
+        [str(python_exe), '-m', 'back.crawler.main'],
         cwd=str(BASE_DIR),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -4331,7 +4331,7 @@ def tweet_id_from_url(url):
 
 
 def latest_tweet_for_monitor(screen_name, account, proxy_value=''):
-    from benchmark_down import BenchmarkAccountDownloader
+    from back.crawler.benchmark_down import BenchmarkAccountDownloader
 
     config = {
         'targets': screen_name,
@@ -4949,7 +4949,8 @@ def run_task(task, worker_id='worker-1'):
 
     cmd = [
         sys.executable,
-        str(BASE_DIR / 'web_runner.py'),
+        '-m',
+        'back.crawler.web_runner',
         '--config',
         str(config_path),
         '--account',
@@ -5283,7 +5284,7 @@ def apply_automatic_concurrency(config):
 
 
 def normalize_user_targets(value, label='目标账号'):
-    from benchmark_down import parse_screen_name
+    from back.crawler.benchmark_down import parse_screen_name
 
     raw_targets = str(value or '').replace(',', '\n').splitlines()
     parsed = []
@@ -6274,7 +6275,7 @@ async def api_bulk_add_bloggers(request: Request, user=Depends(require_api_user)
     duplicates = []
     skipped = []
     seen = set()
-    from benchmark_down import parse_screen_name
+    from back.crawler.benchmark_down import parse_screen_name
 
     with db() as conn:
         for raw in raw_lines:
@@ -6626,7 +6627,7 @@ def api_local_browser_login_helper_install(request: Request, user=Depends(requir
 
 @app.get('/api/accounts/local-browser-login/helper/script')
 def api_local_browser_login_helper_script():
-    path = BASE_DIR / 'local_login_helper.py'
+    path = BASE_DIR / 'back' / 'tools' / 'local_login_helper.py'
     if not path.exists():
         raise HTTPException(status_code=404, detail='local_login_helper.py not found')
     return FileResponse(path, media_type='text/x-python', filename='local_login_helper.py')

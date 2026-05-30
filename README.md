@@ -215,14 +215,14 @@ Before enabling Caddy, confirm that host ports `80` and `443` are available, and
 
 | Script | Purpose |
 | --- | --- |
-| `back/` | Backend package containing the Web console and local panel implementations. |
-| `web_app.py` | Compatibility entrypoint for the full Web console backend in `back.web`. |
-| `panel_app.py` | Compatibility entrypoint for the lightweight local browser panel in `back.panel`. |
-| `main.py` | Download media by username according to `settings.json`. |
-| `tag_down.py` | Download by tag, keyword or advanced search query. |
-| `text_down.py` | Export text-only tweets for specified users. |
-| `reply_down.py` | Download reply content for supported users or tweet links. |
-| `profile_down.py` | Fetch user profile information. |
+| `back/` | Backend package containing Web, panel, crawler, shared utilities and tools. |
+| `web_app.py` | Compatibility entrypoint for `back.web.app`. |
+| `panel_app.py` | Compatibility entrypoint for `back.panel.app`. |
+| `main.py` | Compatibility entrypoint for `back.crawler.main`; downloads media by username according to `settings.json`. |
+| `tag_down.py` | Compatibility entrypoint for `back.crawler.tag_down`; downloads by tag, keyword or advanced search query. |
+| `text_down.py` | Compatibility entrypoint for `back.crawler.text_down`; exports text-only tweets. |
+| `reply_down.py` | Compatibility entrypoint for `back.crawler.reply_down`; downloads reply content. |
+| `profile_down.py` | Compatibility entrypoint for `back.crawler.profile_down`; fetches profile information. |
 
 ## Advanced Search
 

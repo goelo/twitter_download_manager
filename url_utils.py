@@ -1,5 +1,5 @@
+import sys
 
+from back.shared import url_utils as _module
 
-
-def quote_url(url):
-    return url.replace('{','%7B').replace('}','%7D')
+sys.modules[__name__] = _module
