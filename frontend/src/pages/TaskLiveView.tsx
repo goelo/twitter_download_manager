@@ -8,6 +8,14 @@ import { Card, CardContent, CardHeader } from '../components/ui/card';
 
 const PAGE_SIZE = 10;
 
+function displayLiveTaskTitle(task: { title: string; task_type: string }) {
+  const title = (task.title || '').trim();
+  if (task.task_type === 'benchmark_account') {
+    return title.replace(/^对标账号\s*[-—:：]\s*/u, '') || title || '未命名任务';
+  }
+  return title || '未命名任务';
+}
+
 export function TaskLiveView() {
   const { id } = useParams<{ id: string }>();
   const taskId = parseInt(id || '0', 10);
@@ -57,7 +65,7 @@ export function TaskLiveView() {
           </Button>
           <div>
             <h1 className="text-2xl font-bold">实时数据流</h1>
-            {task && <p className="text-sm text-muted-foreground">{task.title}</p>}
+            {task && <p className="text-sm text-muted-foreground">{displayLiveTaskTitle(task)}</p>}
           </div>
         </div>
         {task?.status === 'running' && (
@@ -152,7 +160,14 @@ export function TaskLiveView() {
                           </div>
                         </td>
                         <td className="py-2 pr-3 max-w-md">
-                          <div className="truncate">{item.tweet_content || '无正文内容'}</div>
+                          <button
+                            type="button"
+                            onClick={() => setExpandedId(expandedId === item.id ? null : item.id)}
+                            className="line-clamp-2 min-h-[40px] cursor-pointer break-words text-left leading-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))]"
+                            aria-expanded={expandedId === item.id}
+                          >
+                            {item.tweet_content || '无正文内容'}
+                          </button>
                         </td>
                         <td className="py-2 pr-3">
                           {item.media_type ? (

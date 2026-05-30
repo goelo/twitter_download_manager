@@ -392,6 +392,12 @@ class ResourceGovernanceTest(unittest.TestCase):
         with self.assertRaises(web_app.HTTPException):
             web_app.validate_task_config(invalid)
 
+    def test_benchmark_task_title_omits_repeated_type_prefix(self):
+        self.assertEqual(
+            web_app.title_from_config({'task_type': 'benchmark_account', 'targets': 'arsenal'}),
+            'arsenal',
+        )
+
     def test_create_task_records_tracked_bloggers(self):
         with web_app.db() as conn:
             account_id = conn.execute(
@@ -686,6 +692,23 @@ class ResourceGovernanceTest(unittest.TestCase):
     def test_rate_limited_tasks_do_not_retry_immediately(self):
         self.assertFalse(web_app.should_retry_task('rate_limited'))
         self.assertTrue(web_app.should_retry_task('network_failed'))
+
+    def test_local_login_helper_reports_unsupported_backend(self):
+        original_name = web_app.os.name
+        try:
+            web_app.os.name = 'posix'
+            ok, message = web_app.start_local_login_helper_process()
+        finally:
+            web_app.os.name = original_name
+
+        self.assertFalse(ok)
+        self.assertIn('Web 后端不在 Windows 本机', message)
+
+        payload = web_app.local_login_helper_diagnostics('unsupported', message, failure_reason=message)
+        self.assertFalse(payload['ok'])
+        self.assertEqual(payload['status'], 'unsupported')
+        self.assertIn('auto_start_supported', payload)
+        self.assertIn('helper_url', payload)
 
 
 if __name__ == '__main__':

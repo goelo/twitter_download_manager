@@ -8,7 +8,7 @@ import { Button } from './components/ui/button';
 import { Card, CardContent, CardHeader } from './components/ui/card';
 import { Input } from './components/ui/input';
 import { Textarea } from './components/ui/textarea';
-import type { Account, BitBrowserImportResult, DashboardHeatmap, DashboardHeatmapCell, DashboardHeatmapItem, DashboardTask, LoginQueueItem, LoginQueueParseResponse, OperationLog, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, ScheduleFormValues, Task, TaskFormValues, TaskPreview, TaskResultItem, TaskResultMedia, TaskType, TrackedBlogger } from './lib/types';
+import type { Account, BitBrowserImportResult, DashboardHeatmap, DashboardHeatmapCell, DashboardHeatmapItem, DashboardTask, LocalBrowserLoginHelperStatus, LoginQueueItem, LoginQueueParseResponse, OperationLog, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, ScheduleFormValues, Task, TaskFormValues, TaskPreview, TaskResultItem, TaskResultMedia, TaskType, TrackedBlogger } from './lib/types';
 import { cn } from './lib/utils';
 import { getTaskTemplateById, taskTemplates, type TaskTemplate } from './lib/templates';
 import { defaultRunTimeRange, defaultTaskTimeRange, presetFromTimeRange, rangeFromPreset, splitTimeRange, timeRangeError, TIME_PRESETS, todayString, type TimePreset } from './lib/timeRange';
@@ -235,6 +235,26 @@ function accountUsabilityDescription(account: Account) {
   if (account.status === 'expired' || account.status === 'auth_expired') return '会话已失效，需要重新登录后再使用。';
   if (account.status === 'disabled') return '账号已停用，不会自动分配任务。';
   return statusDescription(account.status) || '当前不会自动分配任务。';
+}
+
+function localLoginHelperUnavailableMessage(helper: LocalBrowserLoginHelperStatus) {
+  if (helper.status === 'unsupported' || helper.auto_start_supported === false) {
+    return helper.message || '当前 Web 后端不在 Windows 本机，浏览器不能直接启动这台电脑上的 start_local_login_helper.bat。';
+  }
+  return helper.message || '本地 Chrome 登录助手暂未就绪，系统会继续自动检测。';
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function displayTaskTitle(task: Pick<Task, 'title' | 'task_type'> | Pick<DashboardTask, 'title' | 'task_type'> | Pick<DashboardHeatmapItem, 'task_title' | 'task_type'>) {
+  const rawTitle = 'title' in task ? task.title : task.task_title;
+  const title = (rawTitle || '').trim();
+  if (task.task_type === 'benchmark_account') {
+    return title.replace(/^对标账号\s*[-—:：]\s*/u, '') || title || '未命名任务';
+  }
+  return title || '未命名任务';
 }
 
 function proxyStatusLabel(proxy: ProxyItem) {
@@ -721,7 +741,7 @@ function DashboardTaskPanel({ title, icon, tasks, emptyTitle, emptyText, actionL
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge tone={statusTone(task.status)}>{statusLabel(task.status)}</Badge>
-                <span className="truncate text-sm font-semibold">{task.title}</span>
+                <span className="truncate text-sm font-semibold">{displayTaskTitle(task)}</span>
               </div>
               <div className="mt-1 truncate text-xs text-[hsl(var(--muted))]">{task.target}</div>
             </div>
@@ -771,7 +791,7 @@ function AttentionPanel({ tasks, accountIssues, proxyIssues, healthError }: { ta
           >
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone={statusTone(task.status)}>{statusLabel(task.status)}</Badge>
-              <span className="truncate text-sm font-semibold">{task.title}</span>
+              <span className="truncate text-sm font-semibold">{displayTaskTitle(task)}</span>
             </div>
             <div className="mt-1 line-clamp-2 text-xs leading-5 text-[hsl(var(--muted))]">{task.error || statusDescription(task.last_error_type || task.status) || task.target}</div>
           </button>
@@ -1030,7 +1050,7 @@ function HeatmapItemRow({ item }: { item: DashboardHeatmapItem }) {
     <div className="grid gap-3 px-4 py-3 text-sm lg:grid-cols-[180px_1fr_auto]">
       <div className="min-w-0">
         <button className="block truncate font-semibold hover:text-[hsl(var(--primary-dark))]" onClick={() => (window.location.href = `/tasks/${item.task_id}`)}>
-          {item.task_title || `任务 #${item.task_id}`}
+          {item.task_title ? displayTaskTitle(item) : `任务 #${item.task_id}`}
         </button>
         <div className="mt-1 text-xs text-[hsl(var(--muted))]">{item.activity_at || '-'}</div>
       </div>
@@ -1059,7 +1079,7 @@ function DashboardTableRow({ task }: { task: DashboardTask }) {
     <tr className="border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]">
       <td className="px-4 py-3">
         <button className="cursor-pointer text-left font-medium hover:text-[hsl(var(--primary-dark))]" onClick={() => (window.location.href = `/tasks/${task.id}`)}>
-          {task.title}
+          {displayTaskTitle(task)}
         </button>
         <div className="mt-1 text-xs text-[hsl(var(--muted))]">{task.task_type}</div>
       </td>
@@ -1346,7 +1366,7 @@ function runCopyText(status: RunStatus) {
 function taskCopyText(task: Task) {
   return [
     '任务排查信息',
-    `任务: #${task.id} ${task.title}`,
+    `任务: #${task.id} ${displayTaskTitle(task)}`,
     `类型: ${task.task_type}`,
     `状态: ${statusLabel(task.status)}`,
     `状态说明: ${statusDescription(task.status) || '-'}`,
@@ -1377,7 +1397,7 @@ function TaskRow({ task, onDelete, deleting }: { task: Task; onDelete: (id: numb
     <tr className="border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]">
       <td className="px-4 py-3">#{task.id}</td>
       <td className="px-4 py-3">
-        <div className="font-medium">{task.title}</div>
+        <div className="font-medium">{displayTaskTitle(task)}</div>
         <div className="mt-1 text-xs text-[hsl(var(--muted))]">{task.task_type}</div>
       </td>
       <td className="px-4 py-3">
@@ -1958,7 +1978,7 @@ function TaskDetailPage({ id }: { id: number }) {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-2xl font-semibold">{task.title}</h2>
+        <h2 className="text-2xl font-semibold">{displayTaskTitle(task)}</h2>
         <p className="mt-1 text-sm text-[hsl(var(--muted))]">#{task.id} · {task.username || '-'} · {task.created_at}</p>
       </div>
       <ActionBar>
@@ -2322,23 +2342,22 @@ function TaskResultRow({ item, expanded, onToggle }: { item: TaskResultItem; exp
   const mediaLabel = item.media.length ? `${item.media.length} 个媒体` : '无媒体';
   return (
     <div className="border-t border-[hsl(var(--line))]">
-      <div className="grid gap-3 px-4 py-4 hover:bg-[rgba(14,165,233,0.06)] md:grid-cols-[minmax(0,1fr)_180px_140px]">
-        <div className="min-w-0 space-y-2">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
+      <div className="grid min-h-[96px] gap-3 px-4 py-4 hover:bg-[rgba(14,165,233,0.06)] md:grid-cols-[minmax(0,1fr)_180px_170px]">
+        <button type="button" onClick={onToggle} className="min-w-0 cursor-pointer space-y-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))] focus-visible:ring-offset-2 focus-visible:ring-offset-[hsl(var(--panel))]" aria-expanded={expanded}>
+          <div className="flex min-w-0 items-center gap-2">
             <Badge tone={item.media.length ? 'primary' : 'neutral'}>{mediaLabel}</Badge>
-            <span className="text-xs text-[hsl(var(--muted))]">{item.tweet_date || item.created_at}</span>
-            {item.source_file && <span className="truncate text-xs text-[hsl(var(--muted))]">{item.source_file}</span>}
+            <span className="shrink-0 text-xs text-[hsl(var(--muted))]">{item.tweet_date || item.created_at}</span>
+            <span className="min-w-0 truncate text-xs text-[hsl(var(--muted))]">{item.display_name || '-'} {item.screen_name || ''}</span>
           </div>
-          <div className="truncate text-sm leading-6 text-[hsl(var(--text))]">{item.content || '无正文内容'}</div>
-          <div className="truncate text-xs text-[hsl(var(--muted))]">{item.display_name || '-'} {item.screen_name || ''}</div>
-        </div>
+          <div className="line-clamp-2 min-h-[48px] break-words text-sm leading-6 text-[hsl(var(--text))]">{item.content || '无正文内容'}</div>
+        </button>
         <div className="flex items-center gap-3 text-sm text-[hsl(var(--muted))] md:justify-end">
           <span>{item.favorite_count || 0} 赞</span>
           <span>{item.retweet_count || 0} 转</span>
           <span>{item.reply_count || 0} 评</span>
         </div>
         <div className="flex items-center justify-between gap-2 md:justify-end">
-          <ResultLink href={item.tweet_url}>原文</ResultLink>
+          <ResultLink href={item.tweet_url}>打开原文</ResultLink>
           <button type="button" onClick={onToggle} className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[hsl(var(--line))] text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-soft))]" aria-label={expanded ? '收起采集内容' : '展开采集内容'}>
             {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
           </button>
@@ -2926,47 +2945,66 @@ function AccountsPage() {
     },
     onError: (err: Error) => setError(err.message),
   });
+  const waitForLocalHelper = async (onStatus?: (helper: LocalBrowserLoginHelperStatus) => void) => {
+    let latest: LocalBrowserLoginHelperStatus | null = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const helper = await api.ensureLocalBrowserLoginHelper();
+      latest = helper;
+      onStatus?.(helper);
+      if (helper.ok || helper.status === 'ready') return helper;
+      if (helper.status === 'unsupported' || helper.auto_start_supported === false || helper.status === 'failed') return helper;
+      await sleep(1500);
+    }
+    return latest || api.ensureLocalBrowserLoginHelper();
+  };
+  const openLocalHelperWindow = async (payload: { token: string; callback_url?: string; expires_in: number }) => {
+    const response = await fetch('http://127.0.0.1:18765/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        token: payload.token,
+        callback_url: payload.callback_url,
+        expires_in: payload.expires_in,
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(body.message || '本地 Chrome 登录助手没有响应。');
+    }
+    return body;
+  };
   const browserLogin = useMutation({
     mutationFn: async () => {
-      const helper = await api.ensureLocalBrowserLoginHelper();
-      if (!helper.ok) {
+      setBrowserLoginOpen(true);
+      setBrowserLoginToken('');
+      setBrowserLoginStatus('helper_starting');
+      setBrowserLoginMessage('正在启动本地 Chrome 登录助手...');
+      const helper = await waitForLocalHelper((status) => {
+        setBrowserLoginStatus(status.status === 'unsupported' ? 'helper_missing' : 'helper_starting');
+        setBrowserLoginMessage(status.message || '正在启动本地 Chrome 登录助手...');
+      });
+      if (!helper.ok && helper.status !== 'ready') {
         return {
           token: '',
           expires_in: 0,
           callback_url: '',
           status: helper.status === 'starting' ? 'helper_starting' : 'helper_missing',
-          message: helper.message || '本地登录助手暂未就绪，请稍后重试。',
+          message: localLoginHelperUnavailableMessage(helper),
         };
       }
       const session = await api.localBrowserLoginStart();
       try {
-        const response = await fetch('http://127.0.0.1:18765/start', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            token: session.token,
-            callback_url: session.callback_url,
-            expires_in: session.expires_in,
-          }),
-        });
-        const body = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          return {
-            ...session,
-            status: 'helper_missing',
-            message: body.message || '本地登录助手没有响应，系统已尝试自动启动；请稍后重试，或手动运行 start_local_login_helper.bat。',
-          };
-        }
+        const body = await openLocalHelperWindow(session);
         return {
           ...session,
           status: 'running',
           message: body.message || '已请求本地登录助手打开 Chrome，请在弹出的窗口完成 X 登录。',
         };
-      } catch {
+      } catch (err) {
         return {
           ...session,
           status: 'helper_missing',
-          message: '未检测到本地登录助手，系统已尝试自动启动；请稍后重试，或手动运行 start_local_login_helper.bat。',
+          message: err instanceof Error ? err.message : '本地登录助手已启动但 Chrome 窗口打开失败，请重试。',
         };
       }
     },
@@ -3040,29 +3078,22 @@ function AccountsPage() {
     if (!active.token || LOGIN_QUEUE_TERMINAL_STATUSES.has(active.status)) return;
     startedQueueTokenRef.current = active.token;
     setQueueHelperError('');
-    api.ensureLocalBrowserLoginHelper().then((helper) => {
-      if (!helper.ok) {
-        setQueueHelperError(helper.message || '本地登录助手暂未就绪，请稍后重试。');
+    waitForLocalHelper((helper) => {
+      if (!helper.ok && helper.status !== 'ready') {
+        setQueueHelperError(helper.message || '正在启动本地 Chrome 登录助手...');
+      }
+    }).then((helper) => {
+      if (!helper.ok && helper.status !== 'ready') {
+        setQueueHelperError(localLoginHelperUnavailableMessage(helper));
         return;
       }
-      return fetch('http://127.0.0.1:18765/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          token: active.token,
-          callback_url: loginQueueQuery.data?.callback_url,
-          expires_in: active.expires_in,
-        }),
+      return openLocalHelperWindow({
+        token: active.token,
+        callback_url: loginQueueQuery.data?.callback_url,
+        expires_in: active.expires_in,
       });
     })
-      .then(async (response) => {
-        if (!response) return;
-        const body = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          setQueueHelperError(body.message || '本地登录助手没有响应，系统已尝试自动启动；请稍后重试当前队列项。');
-        }
-      })
-      .catch((err: Error) => setQueueHelperError(err.message || '本地登录助手自动启动失败；请稍后重试，或手动运行 start_local_login_helper.bat。'));
+      .catch((err: Error) => setQueueHelperError(err.message || '本地登录助手自动启动失败；请稍后重试。'));
   };
   const checkAccount = useMutation({
     mutationFn: (id: number) => api.checkAccount(id),
@@ -3150,9 +3181,9 @@ function AccountsPage() {
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
-            {browserLoginStatus === 'helper_missing' || browserLoginStatus === 'helper_starting' ? (
+            {browserLoginStatus === 'helper_missing' ? (
               <div className="rounded-lg border border-[hsl(var(--warning))] bg-[rgba(251,191,36,0.12)] px-4 py-3 text-sm text-[hsl(var(--text))]">
-                {browserLoginMessage || '系统正在尝试启动本地 Chrome 登录助手；如果持续失败，可手动运行 start_local_login_helper.bat 作为兜底。'}
+                {browserLoginMessage || '当前 Web 后端不能直接启动本机 Chrome 登录助手。'}
               </div>
             ) : browserLoginStatus === 'completed' ? (
               <div className="rounded-lg border border-[hsl(var(--success))] bg-[rgba(34,197,94,0.12)] px-4 py-3 text-sm text-[hsl(var(--text))]">
@@ -3164,11 +3195,11 @@ function AccountsPage() {
               </div>
             ) : (
               <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-4 py-3 text-sm text-[hsl(var(--muted))]">
-                系统会自动启动本地助手并弹出临时 Chrome 授权窗口。请在窗口里完成 X 登录，工作台会自动检测并保存 Cookie。
+                {browserLoginStatus === 'helper_starting' ? '系统正在自动启动本地助手；就绪后会直接弹出 Chrome 登录窗口。' : '系统会自动启动本地助手并弹出临时 Chrome 授权窗口。请在窗口里完成 X 登录，工作台会自动检测并保存 Cookie。'}
               </div>
             )}
             <div className="flex flex-wrap gap-2">
-              {(browserLoginStatus === 'helper_missing' || browserLoginStatus === 'helper_starting') && (
+              {browserLoginStatus === 'helper_missing' && (
                 <Button variant="secondary" size="sm" onClick={retryLocalHelper} disabled={browserLogin.isPending}>
                   重试启动助手
                 </Button>

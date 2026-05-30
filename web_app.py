@@ -3,6 +3,7 @@ import csv
 import hashlib
 import json
 import os
+import platform
 import re
 import signal
 import secrets
@@ -164,9 +165,24 @@ def local_login_helper_health(timeout=1.0):
         return False
 
 
+def local_login_helper_diagnostics(status, message, ok=False, failure_reason=''):
+    supported = os.name == 'nt'
+    return {
+        'ok': ok,
+        'status': status,
+        'message': message,
+        'backend_os': os.name,
+        'backend_platform': platform.platform(),
+        'auto_start_supported': supported,
+        'helper_url': LOCAL_LOGIN_HELPER_URL,
+        'helper_healthy': ok and status == 'ready',
+        'failure_reason': failure_reason,
+    }
+
+
 def start_local_login_helper_process():
     if os.name != 'nt':
-        return False, '当前系统暂不支持自动启动本地登录助手，请手动启动 start_local_login_helper.bat。'
+        return False, '当前 Web 后端不在 Windows 本机，不能直接启动这台电脑上的 start_local_login_helper.bat。'
     script = BASE_DIR / 'start_local_login_helper.bat'
     if not script.exists():
         return False, '未找到 start_local_login_helper.bat，请确认项目文件完整。'
@@ -193,24 +209,24 @@ def ensure_local_login_helper_running(wait_seconds=12):
     if not browser_login_available():
         raise HTTPException(status_code=403, detail='浏览器登录已被 TW_WEB_ENABLE_BROWSER_LOGIN=0 禁用。')
     if local_login_helper_health():
-        return {'ok': True, 'status': 'ready', 'message': '本地 Chrome 登录助手已就绪。'}
+        return local_login_helper_diagnostics('ready', '本地 Chrome 登录助手已就绪。', ok=True)
     with local_login_helper_lock:
         if local_login_helper_health():
-            return {'ok': True, 'status': 'ready', 'message': '本地 Chrome 登录助手已就绪。'}
+            return local_login_helper_diagnostics('ready', '本地 Chrome 登录助手已就绪。', ok=True)
         if local_login_helper_process and local_login_helper_process.poll() is None:
             started = True
         else:
             started, result = start_local_login_helper_process()
             if not started:
-                return {'ok': False, 'status': 'failed', 'message': result}
+                return local_login_helper_diagnostics('unsupported' if os.name != 'nt' else 'failed', result, failure_reason=result)
             local_login_helper_process = result
     deadline = time.time() + max(1, wait_seconds)
     while time.time() < deadline:
         if local_login_helper_health(timeout=0.75):
-            return {'ok': True, 'status': 'ready', 'message': '本地 Chrome 登录助手已自动启动。'}
+            return local_login_helper_diagnostics('ready', '本地 Chrome 登录助手已自动启动。', ok=True)
         time.sleep(0.5)
-    message = '本地 Chrome 登录助手正在启动，请稍后重试；如果一直失败，可手动运行 start_local_login_helper.bat。'
-    return {'ok': False, 'status': 'starting' if started else 'failed', 'message': message}
+    message = '本地 Chrome 登录助手正在启动，系统会继续自动检测；如果长时间无响应，再手动运行 start_local_login_helper.bat。'
+    return local_login_helper_diagnostics('starting' if started else 'failed', message)
 
 
 def public_base_url(request: Request):
@@ -4598,6 +4614,8 @@ def title_from_config(config):
     }
     target = config.get('targets') or config.get('tag') or config.get('advanced_filter') or '未命名目标'
     target = str(target).replace('\r', ' ').replace('\n', ' ')[:80]
+    if config.get('task_type') == 'benchmark_account':
+        return target
     return f'{names.get(config.get("task_type"), config.get("task_type"))} - {target}'
 
 

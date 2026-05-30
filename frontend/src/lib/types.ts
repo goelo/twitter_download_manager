@@ -243,8 +243,14 @@ export type LoginQueueResponse = {
 
 export type LocalBrowserLoginHelperStatus = {
   ok: boolean;
-  status: 'ready' | 'starting' | 'failed' | string;
+  status: 'ready' | 'starting' | 'failed' | 'unsupported' | string;
   message: string;
+  backend_os?: string;
+  backend_platform?: string;
+  auto_start_supported?: boolean;
+  helper_url?: string;
+  helper_healthy?: boolean;
+  failure_reason?: string;
 };
 
 export type LoginQueueParseItem = {
