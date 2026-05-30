@@ -1,5 +1,33 @@
 import type { Account, ApiError, BitBrowserImportResponse, Dashboard, DashboardHeatmapItems, HealthStatus, LocalBrowserLoginHelperStatus, LoginQueueParseResponse, LoginQueueResponse, OperationLogResponse, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, Task, TaskItemsResponse, TrackedBlogger } from './types';
 
+type OperationLogParams = {
+  task_id?: number;
+  schedule_id?: number;
+  level?: string;
+  event_type?: string;
+  error_type?: string;
+  start_at?: string;
+  end_at?: string;
+  q?: string;
+  offset?: number;
+  limit?: number;
+};
+
+function operationLogQuery(params?: OperationLogParams) {
+  const query = new URLSearchParams();
+  if (params?.task_id) query.set('task_id', String(params.task_id));
+  if (params?.schedule_id) query.set('schedule_id', String(params.schedule_id));
+  if (params?.level) query.set('level', params.level);
+  if (params?.event_type) query.set('event_type', params.event_type);
+  if (params?.error_type) query.set('error_type', params.error_type);
+  if (params?.start_at) query.set('start_at', params.start_at);
+  if (params?.end_at) query.set('end_at', params.end_at);
+  if (params?.q) query.set('q', params.q);
+  if (params?.offset) query.set('offset', String(params.offset));
+  if (params?.limit) query.set('limit', String(params.limit));
+  return query;
+}
+
 export type LocalBrowserLoginResponse = {
   status: string;
   message: string;
@@ -53,6 +81,7 @@ export const api = {
   task: (id: number) => request<{ task: Task }>(`/api/tasks/${id}`),
   bloggers: () => request<{ bloggers: TrackedBlogger[] }>('/api/bloggers'),
   addBlogger: (payload: { screen_name: string; display_name?: string; default_tweet_limit?: number }) => request<{ blogger: TrackedBlogger }>('/api/bloggers', { method: 'POST', body: JSON.stringify(payload) }),
+  bulkAddBloggers: (payload: { text: string; default_tweet_limit?: number }) => request<{ imported: TrackedBlogger[]; duplicates: Array<{ screen_name: string; reason: string }>; skipped: Array<{ input: string; reason: string }>; total: number }>('/api/bloggers/bulk', { method: 'POST', body: JSON.stringify(payload) }),
   updateBlogger: (id: number, payload: Partial<Pick<TrackedBlogger, 'screen_name' | 'display_name' | 'default_tweet_limit'>>) => request<{ blogger: TrackedBlogger }>(`/api/bloggers/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   deleteBlogger: (id: number) => request<{ ok: boolean }>(`/api/bloggers/${id}`, { method: 'DELETE' }),
   taskItems: (id: number, params?: { offset?: number; limit?: number; q?: string; has_media?: string; media_status?: string }) => {
@@ -98,20 +127,16 @@ export const api = {
   toggleSchedule: (id: number) => request<{ schedule: ScheduledTask }>(`/api/schedules/${id}/toggle`, { method: 'POST' }),
   deleteSchedule: (id: number) => request<{ ok: boolean }>(`/api/schedules/${id}`, { method: 'DELETE' }),
   runScheduleNow: (id: number) => request<{ schedule: ScheduledTask; task_id: number }>(`/api/schedules/${id}/run-now`, { method: 'POST' }),
-  operationLogs: (params?: { task_id?: number; schedule_id?: number; level?: string; event_type?: string; error_type?: string; start_at?: string; end_at?: string; q?: string; offset?: number; limit?: number }) => {
-    const query = new URLSearchParams();
-    if (params?.task_id) query.set('task_id', String(params.task_id));
-    if (params?.schedule_id) query.set('schedule_id', String(params.schedule_id));
-    if (params?.level) query.set('level', params.level);
-    if (params?.event_type) query.set('event_type', params.event_type);
-    if (params?.error_type) query.set('error_type', params.error_type);
-    if (params?.start_at) query.set('start_at', params.start_at);
-    if (params?.end_at) query.set('end_at', params.end_at);
-    if (params?.q) query.set('q', params.q);
-    if (params?.offset) query.set('offset', String(params.offset));
-    if (params?.limit) query.set('limit', String(params.limit));
+  operationLogs: (params?: OperationLogParams) => {
+    const query = operationLogQuery(params);
     const suffix = query.toString() ? `?${query.toString()}` : '';
     return request<OperationLogResponse>(`/api/operation-logs${suffix}`);
+  },
+  deleteOperationLog: (id: number) => request<{ ok: boolean }>(`/api/operation-logs/${id}`, { method: 'DELETE' }),
+  deleteOperationLogs: (params?: OperationLogParams) => {
+    const query = operationLogQuery(params);
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return request<{ ok: boolean; deleted: number }>(`/api/operation-logs${suffix}`, { method: 'DELETE' });
   },
   resultDbs: () => request<{ configs: ResultDbConfig[]; credential_key_configured: boolean }>('/api/result-db'),
   saveResultDb: (payload: ResultDbFormValues) => request<{ config: ResultDbConfig }>('/api/result-db', { method: 'POST', body: JSON.stringify(payload) }),
@@ -121,10 +146,10 @@ export const api = {
   deleteResultDb: (id: number) => request<{ ok: boolean }>(`/api/result-db/${id}`, { method: 'DELETE' }),
   accounts: () => request<{ accounts: Account[] }>('/api/accounts'),
   addAccount: (payload: Record<string, unknown>) => request<{ ok: boolean }>('/api/accounts/manual', { method: 'POST', body: JSON.stringify(payload) }),
-  updateAccount: (id: number, payload: { label: string }) => request<{ account: Account }>(`/api/accounts/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  updateAccount: (id: number, payload: { label: string; bound_proxy_id?: number | null }) => request<{ account: Account }>(`/api/accounts/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   importBitBrowserAccounts: (payload: { base_url: string; browser_ids: string[] }) => request<BitBrowserImportResponse>('/api/accounts/import/bitbrowser', { method: 'POST', body: JSON.stringify(payload) }),
   ensureLocalBrowserLoginHelper: () => request<LocalBrowserLoginHelperStatus>('/api/accounts/local-browser-login/helper/ensure', { method: 'POST' }),
-  localBrowserLoginStart: (payload?: { label?: string }) => request<LocalBrowserLoginResponse>('/api/accounts/local-browser-login/start', { method: 'POST', body: JSON.stringify(payload || {}) }),
+  localBrowserLoginStart: (payload?: { label?: string; bound_proxy_id?: number | null }) => request<LocalBrowserLoginResponse>('/api/accounts/local-browser-login/start', { method: 'POST', body: JSON.stringify(payload || {}) }),
   localBrowserLoginStatus: (token: string) => request<LocalBrowserLoginResponse>(`/api/accounts/local-browser-login/status?token=${encodeURIComponent(token)}`),
   localBrowserLoginCancel: (token: string) => request<{ ok: boolean }>('/api/accounts/local-browser-login/cancel', { method: 'POST', body: JSON.stringify({ token }) }),
   parseLoginQueueText: (payload: { text: string }) => request<LoginQueueParseResponse>('/api/accounts/login-queue/parse', { method: 'POST', body: JSON.stringify(payload) }),

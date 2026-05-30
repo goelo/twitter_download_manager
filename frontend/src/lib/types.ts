@@ -41,6 +41,11 @@ export type Account = {
   last_used_at: string | null;
   cooldown_until: string | null;
   tier: string;
+  bound_proxy_id: number | null;
+  bound_proxy_label: string | null;
+  bound_proxy_status: string | null;
+  bound_proxy_enabled: boolean | null;
+  bound_proxy_available: boolean;
   capacity?: AccountCapacity;
   created_at: string;
 };
@@ -174,6 +179,9 @@ export type ScheduleFormValues = {
   image_format: string;
   media_count_limit: number;
   proxy: string;
+  monitor_new_content: boolean;
+  monitor_interval_minutes: number;
+  first_run_policy: 'baseline';
 };
 
 export type TaskPreview = {

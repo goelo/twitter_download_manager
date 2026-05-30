@@ -659,6 +659,7 @@ def apply_schema_migrations():
             (3, migration_runtime_indexes),
             (4, migration_anti_detection_and_realtime),
             (5, migration_tracked_bloggers),
+            (6, migration_schedule_monitor_states),
         ]
         for version, migration in migrations:
             if current >= version:
@@ -743,6 +744,7 @@ def migration_baseline_schema(conn):
     ensure_column(conn, 'accounts', 'last_used_at', 'text')
     ensure_column(conn, 'accounts', 'cooldown_until', 'text')
     ensure_column(conn, 'accounts', 'tier', "text not null default 'new'")
+    ensure_column(conn, 'accounts', 'bound_proxy_id', 'integer')
     ensure_column(conn, 'proxies', 'success_count', 'integer not null default 0')
     ensure_column(conn, 'proxies', 'last_used_at', 'text')
     ensure_column(conn, 'proxies', 'cooldown_until', 'text')
@@ -855,6 +857,7 @@ def migration_anti_detection_and_realtime(conn):
     ensure_column(conn, 'accounts', 'daily_quota', 'integer not null default 200')
     ensure_column(conn, 'accounts', 'daily_used', 'integer not null default 0')
     ensure_column(conn, 'accounts', 'quota_reset_at', 'text')
+    ensure_column(conn, 'accounts', 'bound_proxy_id', 'integer')
 
     # 3. 代理表新增健康检查字段
     ensure_column(conn, 'proxies', 'health_score', 'real not null default 1.0')
@@ -881,6 +884,29 @@ def create_tracked_bloggers_table(conn):
 
 def migration_tracked_bloggers(conn):
     create_tracked_bloggers_table(conn)
+
+
+def migration_schedule_monitor_states(conn):
+    conn.executescript(
+        '''
+        create table if not exists schedule_monitor_states (
+            id integer primary key autoincrement,
+            schedule_id integer not null,
+            screen_name text not null,
+            latest_tweet_id text,
+            latest_tweet_url text,
+            latest_tweet_at text,
+            pending_tweet_id text,
+            pending_tweet_url text,
+            last_checked_at text,
+            created_at text not null,
+            updated_at text not null,
+            unique(schedule_id, screen_name)
+        );
+        create index if not exists idx_schedule_monitor_states_schedule on schedule_monitor_states(schedule_id);
+        create index if not exists idx_schedule_monitor_states_checked on schedule_monitor_states(last_checked_at);
+        '''
+    )
 
 
 def seconds_from_now(seconds):
@@ -1069,6 +1095,7 @@ def init_db():
         ensure_column(conn, 'accounts', 'last_used_at', 'text')
         ensure_column(conn, 'accounts', 'cooldown_until', 'text')
         ensure_column(conn, 'accounts', 'tier', "text not null default 'new'")
+        ensure_column(conn, 'accounts', 'bound_proxy_id', 'integer')
         ensure_column(conn, 'proxies', 'success_count', 'integer not null default 0')
         ensure_column(conn, 'proxies', 'last_used_at', 'text')
         ensure_column(conn, 'proxies', 'cooldown_until', 'text')
@@ -1156,8 +1183,19 @@ def user_payload(user):
     return {'id': user['id'], 'username': user['username'], 'role': user['role']}
 
 
-def account_payload(account, capacity=None):
+def account_payload(account, capacity=None, conn=None):
     capacity = capacity if capacity is not None else account_capacity_payload(account)
+    bound_proxy_id = account['bound_proxy_id'] if 'bound_proxy_id' in account.keys() else None
+    bound_proxy = None
+    if bound_proxy_id:
+        if conn:
+            bound_proxy = conn.execute('select * from proxies where id = ?', (bound_proxy_id,)).fetchone()
+        else:
+            try:
+                with db() as lookup_conn:
+                    bound_proxy = lookup_conn.execute('select * from proxies where id = ?', (bound_proxy_id,)).fetchone()
+            except Exception:
+                bound_proxy = None
     return {
         'id': account['id'],
         'label': account['label'],
@@ -1171,6 +1209,11 @@ def account_payload(account, capacity=None):
         'last_used_at': account['last_used_at'] if 'last_used_at' in account.keys() else None,
         'cooldown_until': account['cooldown_until'] if 'cooldown_until' in account.keys() else None,
         'tier': account['tier'] if 'tier' in account.keys() else 'new',
+        'bound_proxy_id': bound_proxy_id,
+        'bound_proxy_label': bound_proxy['label'] if bound_proxy else None,
+        'bound_proxy_status': bound_proxy['status'] if bound_proxy else None,
+        'bound_proxy_enabled': bool(bound_proxy['enabled']) if bound_proxy else None,
+        'bound_proxy_available': bool(bound_proxy and bound_proxy['enabled'] and bound_proxy['status'] == 'active' and proxy_available_for_task(bound_proxy)),
         'capacity': capacity,
         'created_at': account['created_at'],
     }
@@ -1526,6 +1569,48 @@ def operation_log_payload(row):
         'message': row['message'],
         'details': details,
     }
+
+
+def operation_log_filters(user, task_id=None, schedule_id=None, level=None, event_type=None, error_type=None, start_at=None, end_at=None, q=None):
+    clauses = []
+    params = []
+    if task_id:
+        clauses.append('task_id = ?')
+        params.append(task_id)
+    if schedule_id:
+        clauses.append('schedule_id = ?')
+        params.append(schedule_id)
+    if level:
+        clauses.append('level = ?')
+        params.append(level)
+    if event_type:
+        clauses.append('event_type = ?')
+        params.append(event_type)
+    if error_type:
+        clauses.append('error_type = ?')
+        params.append(error_type)
+    if start_at:
+        clauses.append('created_at >= ?')
+        params.append(start_at)
+    if end_at:
+        clauses.append('created_at <= ?')
+        params.append(end_at)
+    if q:
+        clauses.append('(message like ? or event_type like ? or error_type like ?)')
+        like = f'%{q}%'
+        params.extend([like, like, like])
+    if user['role'] != 'admin':
+        clauses.append(
+            '''
+            (
+              task_id in (select id from tasks where user_id = ?)
+              or schedule_id in (select id from scheduled_tasks where user_id = ?)
+            )
+            '''
+        )
+        params.extend([user['id'], user['id']])
+    where = f"where {' and '.join(clauses)}" if clauses else ''
+    return where, params
 
 
 def task_target_label(config):
@@ -3084,6 +3169,12 @@ def select_proxy_for_task_in_conn(conn, preferred_proxy_id=0, manual_proxy='', a
     if manual_proxy:
         return None
     if account_id:
+        account = conn.execute('select bound_proxy_id from accounts where id = ?', (account_id,)).fetchone()
+        bound_proxy_id = account['bound_proxy_id'] if account and 'bound_proxy_id' in account.keys() else None
+        if bound_proxy_id:
+            bound = conn.execute('select * from proxies where id = ? and enabled = 1 and status = ?', (bound_proxy_id, 'active')).fetchone()
+            if bound and proxy_available_for_task(bound):
+                return bound
         recent = conn.execute(
             '''
             select proxies.*
@@ -3546,23 +3637,37 @@ def default_local_chrome_label():
     return f'Local Chrome Login {datetime.now().strftime("%m%d-%H%M%S")}'
 
 
-def save_account(label, auth_token, ct0, screen_name=None):
+def normalize_bound_proxy_id(conn, value):
+    try:
+        proxy_id = int(value or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail='绑定代理参数无效，请重新选择。')
+    if not proxy_id:
+        return None
+    proxy = conn.execute('select id from proxies where id = ?', (proxy_id,)).fetchone()
+    if not proxy:
+        raise HTTPException(status_code=400, detail='绑定代理不存在，请重新选择。')
+    return proxy_id
+
+
+def save_account(label, auth_token, ct0, screen_name=None, bound_proxy_id=None):
     cookie = f'auth_token={auth_token}; ct0={ct0};'
     label = normalize_account_label(label, screen_name or 'X Account')
     with db() as conn:
+        bound_proxy_id = normalize_bound_proxy_id(conn, bound_proxy_id)
         existing = conn.execute('select id from accounts where auth_token = ? and ct0 = ?', (auth_token, ct0)).fetchone()
         if existing:
             conn.execute(
-                'update accounts set label = ?, cookie = ?, screen_name = coalesce(?, screen_name), status = ?, last_checked_at = ? where id = ?',
-                (label, cookie, screen_name, 'active', now(), existing['id']),
+                'update accounts set label = ?, cookie = ?, screen_name = coalesce(?, screen_name), status = ?, last_checked_at = ?, bound_proxy_id = coalesce(?, bound_proxy_id) where id = ?',
+                (label, cookie, screen_name, 'active', now(), bound_proxy_id, existing['id']),
             )
             return
         conn.execute(
             '''
-            insert into accounts (label, auth_token, ct0, cookie, screen_name, status, last_checked_at, created_at)
-            values (?, ?, ?, ?, ?, 'active', ?, ?)
+            insert into accounts (label, auth_token, ct0, cookie, screen_name, status, last_checked_at, created_at, bound_proxy_id)
+            values (?, ?, ?, ?, ?, 'active', ?, ?, ?)
             ''',
-            (label, auth_token, ct0, cookie, screen_name, now(), now()),
+            (label, auth_token, ct0, cookie, screen_name, now(), now(), bound_proxy_id),
         )
 
 
@@ -3896,6 +4001,8 @@ def record_schedule_task_result(task, status, error_type=None, error=''):
     schedule_id = task.get('schedule_id')
     if not schedule_id:
         return
+    if status == 'completed':
+        advance_schedule_monitor_state(task)
     with db() as conn:
         row = conn.execute('select * from scheduled_tasks where id = ?', (schedule_id,)).fetchone()
         if not row:
@@ -3922,6 +4029,214 @@ def record_schedule_task_result(task, status, error_type=None, error=''):
             schedule_id=schedule_id,
             error_type=error_type or status,
         )
+
+
+def monitor_interval_due(schedule, config):
+    interval = max(5, int(config.get('monitor_interval_minutes') or 15))
+    current = now()
+    with db() as conn:
+        row = conn.execute('select max(last_checked_at) as last_checked_at from schedule_monitor_states where schedule_id = ?', (schedule['id'],)).fetchone()
+    last_checked_at = row['last_checked_at'] if row else None
+    if not last_checked_at:
+        return True
+    return seconds_since(last_checked_at) >= interval * 60
+
+
+def tweet_id_from_url(url):
+    match = re.search(r'/status/(\d+)', str(url or ''))
+    return match.group(1) if match else ''
+
+
+def latest_tweet_for_monitor(screen_name, account, proxy_value=''):
+    from benchmark_down import BenchmarkAccountDownloader
+
+    config = {
+        'targets': screen_name,
+        'tweet_limit': 1,
+        'time_range': task_default_time_range(),
+        'has_retweet': False,
+        'api_budget': 2,
+        'cache_timeline_ttl_seconds': 0,
+        'cache_user_ttl_seconds': 300,
+        'proxy': proxy_value or '',
+    }
+    downloader = BenchmarkAccountDownloader(config, account['cookie'], str(TASKS_DIR / '_monitor_probe'))
+    user = downloader.get_user_info(screen_name)
+    response = downloader.client.get_text(
+        downloader.tweet_url(user['rest_id'], ''),
+        cache_namespace='monitor_timeline',
+        cache_key=f'{user["rest_id"]}:latest',
+        cache_ttl=0,
+    )
+    raw_data = json.loads(response)
+    entries, _ = downloader.extract_entries(raw_data, '')
+    for item in entries:
+        tweet = downloader.extract_tweet(item)
+        if tweet and not tweet.get('too_old'):
+            tweet_url = tweet.get('tweet_url') or ''
+            return {
+                'screen_name': user['screen_name'].lower(),
+                'tweet_id': tweet_id_from_url(tweet_url),
+                'tweet_url': tweet_url,
+                'tweet_at': datetime.fromtimestamp(int(tweet['timestamp']) / 1000).strftime('%Y-%m-%d %H:%M:%S') if tweet.get('timestamp') else '',
+            }
+    return {'screen_name': user['screen_name'].lower(), 'tweet_id': '', 'tweet_url': '', 'tweet_at': ''}
+
+
+def upsert_monitor_baseline(conn, schedule_id, screen_name, latest):
+    current_time = now()
+    conn.execute(
+        '''
+        insert into schedule_monitor_states
+          (schedule_id, screen_name, latest_tweet_id, latest_tweet_url, latest_tweet_at, last_checked_at, created_at, updated_at)
+        values (?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(schedule_id, screen_name) do update set
+          latest_tweet_id = excluded.latest_tweet_id,
+          latest_tweet_url = excluded.latest_tweet_url,
+          latest_tweet_at = excluded.latest_tweet_at,
+          pending_tweet_id = null,
+          pending_tweet_url = null,
+          last_checked_at = excluded.last_checked_at,
+          updated_at = excluded.updated_at
+        ''',
+        (schedule_id, screen_name, latest.get('tweet_id') or '', latest.get('tweet_url') or '', latest.get('tweet_at') or '', current_time, current_time, current_time),
+    )
+
+
+def mark_monitor_pending(conn, schedule_id, screen_name, latest):
+    current_time = now()
+    conn.execute(
+        '''
+        update schedule_monitor_states
+        set pending_tweet_id = ?, pending_tweet_url = ?, latest_tweet_at = ?, last_checked_at = ?, updated_at = ?
+        where schedule_id = ? and screen_name = ?
+        ''',
+        (latest.get('tweet_id') or '', latest.get('tweet_url') or '', latest.get('tweet_at') or '', current_time, current_time, schedule_id, screen_name),
+    )
+
+
+def handle_monitor_schedule(schedule, config):
+    schedule_id = schedule['id']
+    with db() as conn:
+        active = conn.execute(
+            "select id from tasks where schedule_id = ? and status in ('queued', 'running') limit 1",
+            (schedule_id,),
+        ).fetchone()
+    if active:
+        append_operation_log(
+            'warning',
+            'monitor_skipped',
+            f'监控计划跳过，本计划已有未结束任务 #{active["id"]}',
+            task_id=active['id'],
+            schedule_id=schedule_id,
+        )
+        with db() as conn:
+            conn.execute('update scheduled_tasks set next_run_at = ?, locked_at = null, updated_at = ? where id = ?', (seconds_from_now(60), now(), schedule_id))
+        return
+    if not monitor_interval_due(schedule, config):
+        with db() as conn:
+            next_run = seconds_from_now(60)
+            conn.execute('update scheduled_tasks set next_run_at = ?, locked_at = null, updated_at = ? where id = ?', (next_run, now(), schedule_id))
+        return
+
+    targets = [item.strip().lower() for item in normalize_user_targets(config.get('targets') or '').split(',') if item.strip()]
+    if not targets:
+        raise HTTPException(status_code=400, detail='请填写目标用户名')
+
+    probe_config = dict(config)
+    with db() as conn:
+        account = select_account_for_task_in_conn(conn, int(schedule.get('account_id') or 0))
+        apply_adaptive_throttle(probe_config, account, conn)
+        proxy = select_proxy_for_task_in_conn(conn, int(schedule.get('proxy_id') or 0), probe_config.get('proxy') or '', account_id=account['id'])
+        proxy_value = normalize_proxy_url(proxy['proxy']) if proxy else (probe_config.get('proxy') or '')
+        existing = {
+            row['screen_name']: row
+            for row in conn.execute('select * from schedule_monitor_states where schedule_id = ?', (schedule_id,)).fetchall()
+        }
+
+    changed = []
+    baselined = []
+    checked = []
+    for target in targets:
+        latest = latest_tweet_for_monitor(target, account, proxy_value)
+        screen_name = (latest.get('screen_name') or target).lower()
+        latest_id = latest.get('tweet_id') or ''
+        checked.append(screen_name)
+        with db() as conn:
+            state = existing.get(screen_name) or conn.execute(
+                'select * from schedule_monitor_states where schedule_id = ? and screen_name = ?',
+                (schedule_id, screen_name),
+            ).fetchone()
+            if not state:
+                upsert_monitor_baseline(conn, schedule_id, screen_name, latest)
+                baselined.append(screen_name)
+                continue
+            if latest_id and latest_id != (state['latest_tweet_id'] or ''):
+                mark_monitor_pending(conn, schedule_id, screen_name, latest)
+                changed.append(screen_name)
+            else:
+                conn.execute(
+                    'update schedule_monitor_states set last_checked_at = ?, updated_at = ? where schedule_id = ? and screen_name = ?',
+                    (now(), now(), schedule_id, screen_name),
+                )
+
+    if changed:
+        task_config = dict(config)
+        task_config['targets'] = ','.join(changed)
+        task_config['monitor_triggered'] = True
+        task_config['monitor_changed_targets'] = changed
+        task_id = create_queued_task(schedule['user_id'], schedule['account_id'], task_config, resource_mode='monitor', schedule_id=schedule_id)
+        message = f'监控发现 {len(changed)} 个博主有新内容，已生成任务 #{task_id}'
+        with db() as conn:
+            conn.execute(
+                'update scheduled_tasks set last_run_at = ?, next_run_at = ?, last_task_id = ?, consecutive_failures = 0, last_error = null, locked_at = null, updated_at = ? where id = ?',
+                (now(), seconds_from_now(max(5, int(config.get('monitor_interval_minutes') or 15)) * 60), task_id, now(), schedule_id),
+            )
+        append_operation_log('info', 'monitor_triggered', message, task_id=task_id, schedule_id=schedule_id, details={'changed': changed})
+        return
+
+    event = 'monitor_baseline_created' if baselined else 'monitor_no_new_content'
+    message = f'监控已检查 {len(checked)} 个博主，{"首次建立基线" if baselined else "暂无新内容"}'
+    with db() as conn:
+        conn.execute(
+            'update scheduled_tasks set last_run_at = ?, next_run_at = ?, consecutive_failures = 0, last_error = null, locked_at = null, updated_at = ? where id = ?',
+            (now(), seconds_from_now(max(5, int(config.get('monitor_interval_minutes') or 15)) * 60), now(), schedule_id),
+        )
+    append_operation_log('info', event, message, schedule_id=schedule_id, details={'checked': checked, 'baselined': baselined})
+
+
+def advance_schedule_monitor_state(task):
+    try:
+        config = json.loads(task.get('config_json') or '{}') if isinstance(task.get('config_json'), str) else (task.get('config') or {})
+    except Exception:
+        config = {}
+    if not config.get('monitor_triggered'):
+        return
+    schedule_id = task.get('schedule_id')
+    targets = config.get('monitor_changed_targets') or []
+    if not schedule_id or not targets:
+        return
+    with db() as conn:
+        for target in targets:
+            screen_name = str(target or '').lower()
+            state = conn.execute(
+                'select * from schedule_monitor_states where schedule_id = ? and screen_name = ?',
+                (schedule_id, screen_name),
+            ).fetchone()
+            if not state or not state['pending_tweet_id']:
+                continue
+            conn.execute(
+                '''
+                update schedule_monitor_states
+                set latest_tweet_id = pending_tweet_id,
+                    latest_tweet_url = pending_tweet_url,
+                    pending_tweet_id = null,
+                    pending_tweet_url = null,
+                    updated_at = ?
+                where schedule_id = ? and screen_name = ?
+                ''',
+                (now(), schedule_id, screen_name),
+            )
 
 
 def create_queued_task(user_id, account_id, config, resource_mode='manual', schedule_id=None):
@@ -3995,8 +4310,12 @@ def create_queued_task(user_id, account_id, config, resource_mode='manual', sche
 
 def trigger_schedule(schedule):
     schedule_id = schedule['id']
+    config = {}
     try:
         config = json.loads(schedule['config_json'] or '{}')
+        if config.get('monitor_new_content'):
+            handle_monitor_schedule(schedule, config)
+            return
         with db() as conn:
             active = conn.execute(
                 "select id from tasks where schedule_id = ? and status in ('queued', 'running') limit 1",
@@ -4033,7 +4352,10 @@ def trigger_schedule(schedule):
             )
         append_operation_log('error', 'schedule_failed', f'定时计划触发失败: {exc}', schedule_id=schedule_id, error_type='schedule_failed', details={'consecutive_failures': failure_count, 'disabled': should_disable})
         try:
-            next_run = next_schedule_run(schedule['schedule_type'], schedule['run_time'], schedule.get('weekdays'))
+            if config.get('monitor_new_content'):
+                next_run = seconds_from_now(max(5, int(config.get('monitor_interval_minutes') or 15)) * 60)
+            else:
+                next_run = next_schedule_run(schedule['schedule_type'], schedule['run_time'], schedule.get('weekdays'))
             with db() as conn:
                 conn.execute('update scheduled_tasks set next_run_at = ?, updated_at = ? where id = ?', (next_run, now(), schedule_id))
         except Exception:
@@ -4769,6 +5091,8 @@ def build_schedule_config(data):
     task_type = data.get('task_type') or 'benchmark_account'
     if task_type not in {'user_media', 'benchmark_account'}:
         raise HTTPException(status_code=400, detail='定时任务当前只支持博主采集')
+    monitor_interval = parse_int_field(data.get('monitor_interval_minutes'), 15, '监控间隔')
+    monitor_interval = max(5, monitor_interval)
     config = {
         'task_type': task_type,
         'targets': data.get('targets') or '',
@@ -4786,6 +5110,9 @@ def build_schedule_config(data):
         'proxy': data.get('proxy') or '',
         'tweet_limit': parse_int_field(data.get('tweet_limit'), 10, '拉取条数'),
         'api_budget': int(data.get('api_budget') or 0),
+        'monitor_new_content': bool(data.get('monitor_new_content')),
+        'monitor_interval_minutes': monitor_interval,
+        'first_run_policy': data.get('first_run_policy') or 'baseline',
     }
     apply_proxy_selection(config, data.get('proxy_id'))
     validate_task_config(config)
@@ -5315,7 +5642,7 @@ async def api_create_schedule(request: Request, user=Depends(require_api_user)):
     weekdays = normalize_weekdays(data.get('weekdays') or [])
     if schedule_type == 'weekly' and not weekdays:
         raise HTTPException(status_code=400, detail='每周任务至少选择一个星期')
-    next_run = next_schedule_run(schedule_type, run_time, weekdays)
+    next_run = now() if config.get('monitor_new_content') else next_schedule_run(schedule_type, run_time, weekdays)
     timezone = str(data.get('timezone') or SERVER_TIMEZONE).strip() or SERVER_TIMEZONE
     with db() as conn:
         cursor = conn.execute(
@@ -5362,7 +5689,7 @@ async def api_update_schedule(schedule_id: int, request: Request, user=Depends(r
     weekdays = normalize_weekdays(data.get('weekdays') if 'weekdays' in data else schedule['weekdays'])
     if schedule_type == 'weekly' and not weekdays:
         raise HTTPException(status_code=400, detail='每周任务至少选择一个星期')
-    next_run = next_schedule_run(schedule_type, run_time, weekdays)
+    next_run = now() if config.get('monitor_new_content') else next_schedule_run(schedule_type, run_time, weekdays)
     timezone = str(data.get('timezone') or (schedule['timezone'] if 'timezone' in schedule.keys() else SERVER_TIMEZONE)).strip() or SERVER_TIMEZONE
     with db() as conn:
         conn.execute(
@@ -5439,48 +5766,39 @@ def api_operation_logs(
 ):
     limit = max(1, min(int(limit or 200), 500))
     offset = max(0, int(offset or 0))
-    clauses = []
-    params = []
-    if task_id:
-        clauses.append('task_id = ?')
-        params.append(task_id)
-    if schedule_id:
-        clauses.append('schedule_id = ?')
-        params.append(schedule_id)
-    if level:
-        clauses.append('level = ?')
-        params.append(level)
-    if event_type:
-        clauses.append('event_type = ?')
-        params.append(event_type)
-    if error_type:
-        clauses.append('error_type = ?')
-        params.append(error_type)
-    if start_at:
-        clauses.append('created_at >= ?')
-        params.append(start_at)
-    if end_at:
-        clauses.append('created_at <= ?')
-        params.append(end_at)
-    if q:
-        clauses.append('(message like ? or event_type like ? or error_type like ?)')
-        like = f'%{q}%'
-        params.extend([like, like, like])
-    if user['role'] != 'admin':
-        clauses.append(
-            '''
-            (
-              task_id in (select id from tasks where user_id = ?)
-              or schedule_id in (select id from scheduled_tasks where user_id = ?)
-            )
-            '''
-        )
-        params.extend([user['id'], user['id']])
-    where = f"where {' and '.join(clauses)}" if clauses else ''
+    where, params = operation_log_filters(user, task_id, schedule_id, level, event_type, error_type, start_at, end_at, q)
     with db() as conn:
         total = conn.execute(f'select count(*) as count from operation_logs {where}', tuple(params)).fetchone()
         rows = conn.execute(f'select * from operation_logs {where} order by id desc limit ? offset ?', (*params, limit, offset)).fetchall()
     return {'logs': [operation_log_payload(row) for row in rows], 'total': int(total['count'] if total else 0), 'offset': offset, 'limit': limit}
+
+
+@app.delete('/api/operation-logs/{log_id}')
+def api_delete_operation_log(log_id: int, user=Depends(require_api_admin)):
+    with db() as conn:
+        row = conn.execute('select id from operation_logs where id = ?', (log_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail='Operation log not found')
+        conn.execute('delete from operation_logs where id = ?', (log_id,))
+    return {'ok': True}
+
+
+@app.delete('/api/operation-logs')
+def api_delete_operation_logs(
+    user=Depends(require_api_admin),
+    task_id: int | None = None,
+    schedule_id: int | None = None,
+    level: str | None = None,
+    event_type: str | None = None,
+    error_type: str | None = None,
+    start_at: str | None = None,
+    end_at: str | None = None,
+    q: str | None = None,
+):
+    where, params = operation_log_filters(user, task_id, schedule_id, level, event_type, error_type, start_at, end_at, q)
+    with db() as conn:
+        cursor = conn.execute(f'delete from operation_logs {where}', tuple(params))
+    return {'ok': True, 'deleted': cursor.rowcount}
 
 
 @app.get('/api/result-db')
@@ -5607,6 +5925,48 @@ async def api_add_blogger(request: Request, user=Depends(require_api_user)):
             mark_used=False,
         )
     return {'blogger': blogger_payload(row)}
+
+
+@app.post('/api/bloggers/bulk')
+async def api_bulk_add_bloggers(request: Request, user=Depends(require_api_user)):
+    data = await request.json()
+    raw_lines = str(data.get('text') or data.get('targets') or '').replace(',', '\n').splitlines()
+    default_limit = parse_int_field(data.get('default_tweet_limit'), 10, '默认采集条数')
+    if default_limit <= 0:
+        raise HTTPException(status_code=400, detail='默认采集条数需要是大于 0 的整数')
+    imported = []
+    duplicates = []
+    skipped = []
+    seen = set()
+    from benchmark_down import parse_screen_name
+
+    with db() as conn:
+        for raw in raw_lines:
+            original = raw.strip()
+            if not original:
+                continue
+            screen_name = parse_screen_name(original)
+            if not screen_name:
+                skipped.append({'input': original, 'reason': '无法识别用户名或主页链接'})
+                continue
+            key = screen_name.lower()
+            if key in seen:
+                duplicates.append({'screen_name': key, 'reason': '本次导入重复'})
+                continue
+            seen.add(key)
+            existed = conn.execute('select id from tracked_bloggers where lower(screen_name) = lower(?)', (key,)).fetchone()
+            row = upsert_tracked_blogger(conn, key, default_tweet_limit=default_limit, mark_used=False)
+            item = blogger_payload(row)
+            if existed:
+                duplicates.append({'screen_name': key, 'reason': '博主库已存在'})
+            else:
+                imported.append(item)
+    return {
+        'imported': imported,
+        'duplicates': duplicates,
+        'skipped': skipped,
+        'total': len(imported) + len(duplicates) + len(skipped),
+    }
 
 
 @app.patch('/api/bloggers/{blogger_id}')
@@ -5812,7 +6172,7 @@ def api_delete_task(task_id: int, user=Depends(require_api_user)):
 def api_accounts(user=Depends(require_api_admin)):
     with db() as conn:
         rows = conn.execute('select * from accounts order by id desc').fetchall()
-        accounts = [account_payload(row, account_capacity_payload(row, conn)) for row in rows]
+        accounts = [account_payload(row, account_capacity_payload(row, conn), conn) for row in rows]
     return {'accounts': accounts}
 
 
@@ -5922,6 +6282,8 @@ async def api_local_browser_login_start(request: Request, user=Depends(require_a
     label = str(data.get('label') or '').strip()
     if label:
         label = normalize_account_label(label)
+    with db() as conn:
+        bound_proxy_id = normalize_bound_proxy_id(conn, data.get('bound_proxy_id'))
     token = secrets.token_urlsafe(32)
     expires_at = time.time() + LOCAL_BROWSER_LOGIN_TIMEOUT_SECONDS
     with local_browser_login_lock:
@@ -5933,6 +6295,7 @@ async def api_local_browser_login_start(request: Request, user=Depends(require_a
             'expires_at': expires_at,
             'user_id': user['id'],
             'label': label,
+            'bound_proxy_id': bound_proxy_id,
         }
     base_url = public_base_url(request)
     return {
@@ -6014,7 +6377,7 @@ async def api_local_browser_login_complete(request: Request):
             raise HTTPException(status_code=404, detail='本地授权登录已不存在或已过期')
         final_screen_name = checked_screen_name or screen_name
         label = session.get('label') or final_screen_name or default_local_chrome_label()
-        save_account(label, auth_token, ct0, final_screen_name)
+        save_account(label, auth_token, ct0, final_screen_name, session.get('bound_proxy_id'))
         session['status'] = 'completed'
         if ok:
             session['message'] = '登录成功，账号已保存。'
@@ -6221,7 +6584,9 @@ def api_check_account(account_id: int, user=Depends(require_api_admin)):
     if not account:
         raise HTTPException(status_code=404, detail='Account not found')
     refreshed, ok, error = check_account_row(account)
-    return {'account': account_payload(refreshed), 'ok': ok, 'error': error}
+    with db() as conn:
+        payload = account_payload(refreshed, account_capacity_payload(refreshed, conn), conn)
+    return {'account': payload, 'ok': ok, 'error': error}
 
 
 @app.patch('/api/accounts/{account_id}')
@@ -6232,9 +6597,10 @@ async def api_update_account(account_id: int, request: Request, user=Depends(req
         account = conn.execute('select * from accounts where id = ?', (account_id,)).fetchone()
         if not account:
             raise HTTPException(status_code=404, detail='Account not found')
-        conn.execute('update accounts set label = ? where id = ?', (label, account_id))
+        bound_proxy_id = normalize_bound_proxy_id(conn, data.get('bound_proxy_id')) if 'bound_proxy_id' in data else (account['bound_proxy_id'] if 'bound_proxy_id' in account.keys() else None)
+        conn.execute('update accounts set label = ?, bound_proxy_id = ? where id = ?', (label, bound_proxy_id, account_id))
         refreshed = conn.execute('select * from accounts where id = ?', (account_id,)).fetchone()
-        payload = account_payload(refreshed, account_capacity_payload(refreshed, conn))
+        payload = account_payload(refreshed, account_capacity_payload(refreshed, conn), conn)
     return {'account': payload}
 
 

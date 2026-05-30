@@ -8,7 +8,7 @@ import { Button } from './components/ui/button';
 import { Card, CardContent, CardHeader } from './components/ui/card';
 import { Input } from './components/ui/input';
 import { Textarea } from './components/ui/textarea';
-import type { Account, BitBrowserImportResult, DashboardHeatmap, DashboardHeatmapCell, DashboardHeatmapItem, DashboardTask, LoginQueueItem, LoginQueueParseResponse, OperationLog, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, ScheduleFormValues, Task, TaskFormValues, TaskPreview, TaskResultItem, TaskResultMedia, TaskType, TrackedBlogger } from './lib/types';
+import type { Account, BitBrowserImportResult, DashboardHeatmap, DashboardHeatmapCell, DashboardHeatmapItem, DashboardTask, LocalBrowserLoginHelperStatus, LoginQueueItem, LoginQueueParseResponse, OperationLog, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, ScheduleFormValues, Task, TaskFormValues, TaskPreview, TaskResultItem, TaskResultMedia, TaskType, TrackedBlogger } from './lib/types';
 import { cn } from './lib/utils';
 import { getTaskTemplateById, taskTemplates, type TaskTemplate } from './lib/templates';
 import { defaultRunTimeRange, presetFromTimeRange, rangeFromPreset, splitTimeRange, timeRangeError, TIME_PRESETS, todayString, type TimePreset } from './lib/timeRange';
@@ -91,6 +91,9 @@ const DEFAULT_SCHEDULE_FORM: ScheduleFormValues = {
   image_format: 'orig',
   media_count_limit: 350,
   proxy: '',
+  monitor_new_content: false,
+  monitor_interval_minutes: 15,
+  first_run_policy: 'baseline',
 };
 
 const DEFAULT_RESULT_DB_FORM: ResultDbFormValues = {
@@ -203,9 +206,20 @@ function statusDescription(status: string) {
 }
 
 function levelTone(level: string): BadgeTone {
-  if (level === 'error') return 'danger';
-  if (level === 'warning') return 'warning';
-  return 'primary';
+  if (level === 'error' || level === 'warning') return 'danger';
+  return 'success';
+}
+
+function operationLogRowClass(level: string) {
+  if (level === 'error' || level === 'warning') {
+    return 'border-t border-[rgba(248,113,113,0.36)] bg-[rgba(248,113,113,0.08)] align-top text-[hsl(var(--text))] hover:bg-[rgba(248,113,113,0.14)]';
+  }
+  return 'border-t border-[rgba(34,197,94,0.28)] bg-[rgba(34,197,94,0.06)] align-top text-[hsl(var(--text))] hover:bg-[rgba(34,197,94,0.11)]';
+}
+
+function operationLogMessageClass(level: string) {
+  if (level === 'error' || level === 'warning') return 'text-[hsl(var(--danger))]';
+  return 'text-[hsl(var(--success))]';
 }
 
 function accountCapacityTone(level?: string): BadgeTone {
@@ -246,8 +260,14 @@ function accountErrorSummary(account: Account) {
   return account.last_error || account.capacity?.reason || accountUsabilityDescription(account) || '-';
 }
 
-function localHelperErrorMessage(err: unknown) {
+function localHelperErrorMessage(err: unknown, mode: 'local' | 'remote' = 'remote') {
   const raw = err instanceof Error ? err.message : String(err || '');
+  if (mode === 'local') {
+    if (!raw || raw === 'Failed to fetch' || raw.includes('Failed to fetch') || raw.includes('NetworkError') || raw.includes('Load failed')) {
+      return '本机授权助手自动启动后仍未响应。请稍后重试，或手动运行 start_local_login_helper.bat。';
+    }
+    return raw;
+  }
   if (!raw || raw === 'Failed to fetch' || raw.includes('Failed to fetch')) {
     return '首次使用需要运行一次本地授权助手安装器；安装后以后点击“开始本地授权”即可自动打开 Chrome。';
   }
@@ -257,8 +277,37 @@ function localHelperErrorMessage(err: unknown) {
   return raw;
 }
 
+function helperCanAutoStartOnBackend(helper: LocalBrowserLoginHelperStatus) {
+  return helper.auto_start_supported !== false && helper.status !== 'unsupported';
+}
+
 function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function parseAppTime(value: string) {
+  if (!value) return null;
+  const normalized = value.includes('T') ? value : value.replace(' ', 'T');
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function relativeTime(value: string, nowMs: number) {
+  const parsed = parseAppTime(value);
+  if (!parsed) return value || '-';
+  const diffSeconds = Math.max(0, Math.floor((nowMs - parsed.getTime()) / 1000));
+  if (diffSeconds < 10) return '刚刚';
+  if (diffSeconds < 60) return `${diffSeconds} 秒前`;
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  if (diffMinutes < 60) return `${diffMinutes} 分钟前`;
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours} 小时前`;
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 30) return `${diffDays} 天前`;
+  const diffMonths = Math.floor(diffDays / 30);
+  if (diffMonths < 12) return `${diffMonths} 个月前`;
+  return `${Math.floor(diffMonths / 12)} 年前`;
 }
 
 function displayTaskTitle(task: Pick<Task, 'title' | 'task_type'> | Pick<DashboardTask, 'title' | 'task_type'> | Pick<DashboardHeatmapItem, 'task_title' | 'task_type'>) {
@@ -274,6 +323,13 @@ function proxyStatusLabel(proxy: ProxyItem) {
   if (!proxy.enabled) return '已停用';
   if (proxy.status === 'check_failed') return '自动恢复中';
   return statusLabel(proxy.status);
+}
+
+function accountBoundProxySummary(account: Account) {
+  if (!account.bound_proxy_id) return '未绑定';
+  const label = account.bound_proxy_label || `代理 #${account.bound_proxy_id}`;
+  if (account.bound_proxy_available) return label;
+  return `${label} · 不可用将回退`;
 }
 
 function proxyStatusDescription(proxy: ProxyItem) {
@@ -2002,6 +2058,7 @@ function TaskDetailPage({ id }: { id: number }) {
   const [resultQuery, setResultQuery] = useState('');
   const [resultSearch, setResultSearch] = useState('');
   const [mediaFilter, setMediaFilter] = useState('');
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const resultLimit = 10;
   const { data, isLoading } = useQuery({ queryKey: ['task', id], queryFn: () => api.task(id), refetchInterval: 4000 });
   const { data: resultData, isLoading: resultsLoading, refetch: refetchResults } = useQuery({
@@ -2013,6 +2070,10 @@ function TaskDetailPage({ id }: { id: number }) {
   const task = data?.task;
   const operationLogs = logData?.logs || [];
   const [copyStatus, setCopyStatus] = useState('');
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 30000);
+    return () => window.clearInterval(timer);
+  }, []);
   const cancel = useMutation({
     mutationFn: () => api.cancelTask(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['task', id] }),
@@ -2203,7 +2264,7 @@ function TaskDetailPage({ id }: { id: number }) {
           </div>
           <Button variant="secondary" size="sm" onClick={() => navigate(`/operation-logs?task_id=${task.id}`)}>查看全部关联日志</Button>
         </div>
-        <OperationLogTable logs={operationLogs} />
+        <OperationLogTable logs={operationLogs} nowMs={nowMs} />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
@@ -2543,12 +2604,12 @@ function TaskResultsPanel({
   );
 }
 
-function OperationLogTable({ logs }: { logs: OperationLog[] }) {
+function OperationLogTable({ logs, nowMs, onDelete, deletingId }: { logs: OperationLog[]; nowMs: number; onDelete?: (log: OperationLog) => void; deletingId?: number | null }) {
   return (
     <Card>
       <CardContent className="p-0">
         <div className="overflow-auto">
-          <table className="w-full min-w-[1080px] border-collapse text-sm">
+          <table className="w-full min-w-[1180px] border-collapse text-sm">
             <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
               <tr>
                 <th className="px-4 py-3">时间</th>
@@ -2557,12 +2618,16 @@ function OperationLogTable({ logs }: { logs: OperationLog[] }) {
                 <th className="px-4 py-3">关联</th>
                 <th className="px-4 py-3">消息</th>
                 <th className="px-4 py-3">错误类型</th>
+                {onDelete && <th className="px-4 py-3"></th>}
               </tr>
             </thead>
             <tbody>
               {logs.map((log) => (
-                <tr key={log.id} className="border-t border-[hsl(var(--line))] align-top hover:bg-[hsl(var(--panel-soft))]">
-                  <td className="whitespace-nowrap px-4 py-3">{log.created_at}</td>
+                <tr key={log.id} className={operationLogRowClass(log.level)}>
+                  <td className="whitespace-nowrap px-4 py-3">
+                    <div className="font-medium" title={log.created_at}>{relativeTime(log.created_at, nowMs)}</div>
+                    <div className="mt-1 text-xs text-[hsl(var(--muted))]">{log.created_at}</div>
+                  </td>
                   <td className="px-4 py-3"><Badge tone={levelTone(log.level)}>{levelLabel(log.level)}</Badge></td>
                   <td className="px-4 py-3 font-medium">{log.event_type}</td>
                   <td className="px-4 py-3 text-[hsl(var(--muted))]">
@@ -2570,16 +2635,25 @@ function OperationLogTable({ logs }: { logs: OperationLog[] }) {
                     {log.schedule_id ? <div>计划 #{log.schedule_id}</div> : null}
                   </td>
                   <td className="max-w-[460px] px-4 py-3">
-                    <div className="whitespace-pre-wrap break-words">{log.message}</div>
+                    <div className={cn('whitespace-pre-wrap break-words font-medium', operationLogMessageClass(log.level))}>{log.message}</div>
                     {Object.keys(log.details || {}).length > 0 && (
                       <pre className="mt-2 max-h-28 overflow-auto rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-2 text-xs text-[hsl(var(--muted))]">{JSON.stringify(log.details, null, 2)}</pre>
                     )}
                   </td>
                   <td className="px-4 py-3">{log.error_type || '-'}</td>
+                  {onDelete && (
+                    <td className="px-4 py-3">
+                      <div className="flex justify-end">
+                        <Button variant="danger" size="sm" onClick={() => onDelete(log)} disabled={deletingId === log.id}>
+                          {deletingId === log.id ? '删除中...' : '删除'}
+                        </Button>
+                      </div>
+                    </td>
+                  )}
                 </tr>
               ))}
               {!logs.length && (
-                <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={6}>暂无运维日志</td></tr>
+                <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={onDelete ? 7 : 6}>暂无运维日志</td></tr>
               )}
             </tbody>
           </table>
@@ -2601,6 +2675,9 @@ function SchedulesPage() {
   const [form, setForm] = useState<ScheduleFormValues>(DEFAULT_SCHEDULE_FORM);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [error, setError] = useState('');
+  const [bulkBloggersText, setBulkBloggersText] = useState('');
+  const [bulkImportMessage, setBulkImportMessage] = useState('');
+  const scheduleSelectClass = 'h-10 w-full rounded-full border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-4 text-sm text-[hsl(var(--text))] outline-none transition-all duration-200 ease-out focus:border-[hsl(var(--primary))] focus:ring-2 focus:ring-[rgba(14,165,233,0.22)] focus:ring-offset-1 focus:ring-offset-[hsl(var(--bg))]';
   const saveSchedule = useMutation({
     mutationFn: () => editingId ? api.updateSchedule(editingId, form) : api.createSchedule(form),
     onSuccess: () => {
@@ -2610,6 +2687,30 @@ function SchedulesPage() {
       queryClient.invalidateQueries({ queryKey: ['schedules'] });
     },
     onError: (err: Error) => setError(err.message),
+  });
+  const bulkAddBloggers = useMutation({
+    mutationFn: () => api.bulkAddBloggers({ text: bulkBloggersText, default_tweet_limit: form.tweet_limit }),
+    onSuccess: (res) => {
+      const importedNames = res.imported.map((blogger) => blogger.screen_name);
+      const existing = new Set(
+        String(form.targets || '')
+          .replace(/,/g, '\n')
+          .split('\n')
+          .map((item) => item.trim().replace(/^@/, '').toLowerCase())
+          .filter(Boolean),
+      );
+      const nextNames = importedNames.filter((name) => !existing.has(name.toLowerCase()));
+      if (nextNames.length) {
+        setForm((prev) => ({
+          ...prev,
+          targets: [prev.targets.trim(), ...nextNames].filter(Boolean).join('\n'),
+        }));
+      }
+      setBulkImportMessage(`已导入 ${res.imported.length} 个，重复 ${res.duplicates.length} 个，跳过 ${res.skipped.length} 个。`);
+      setBulkBloggersText('');
+      queryClient.invalidateQueries({ queryKey: ['bloggers'] });
+    },
+    onError: (err: Error) => setBulkImportMessage(err.message),
   });
   const toggleSchedule = useMutation({
     mutationFn: (id: number) => api.toggleSchedule(id),
@@ -2663,13 +2764,13 @@ function SchedulesPage() {
           <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr))]">
             <Field label="计划名称"><Input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} /></Field>
             <Field label="X账号">
-              <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.account_id} onChange={(e) => setForm((prev) => ({ ...prev, account_id: Number(e.target.value) }))}>
+              <select className={scheduleSelectClass} value={form.account_id} onChange={(e) => setForm((prev) => ({ ...prev, account_id: Number(e.target.value) }))}>
                 <option value={0}>自动分配可用账号</option>
                 {usableAccounts.map((account) => <option key={account.id} value={account.id}>{account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}{account.capacity ? ` · ${account.capacity.score}分 · API余${account.capacity.api_remaining_estimate}` : ''}</option>)}
               </select>
             </Field>
             <Field label="采集类型">
-              <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.task_type} onChange={(e) => setForm((prev) => ({ ...prev, task_type: e.target.value as ScheduleFormValues['task_type'] }))}>
+              <select className={scheduleSelectClass} value={form.task_type} onChange={(e) => setForm((prev) => ({ ...prev, task_type: e.target.value as ScheduleFormValues['task_type'] }))}>
                 <option value="benchmark_account">账号近况</option>
                 <option value="user_media">用户媒体</option>
               </select>
@@ -2678,9 +2779,27 @@ function SchedulesPage() {
           <Field label="目标博主 / 博主列表">
             <Textarea rows={3} value={form.targets} onChange={(e) => setForm((prev) => ({ ...prev, targets: e.target.value }))} placeholder="每行一个用户名或主页链接" />
           </Field>
+          <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-3">
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+              <Field label="批量导入博主">
+                <Textarea
+                  rows={3}
+                  value={bulkBloggersText}
+                  onChange={(e) => setBulkBloggersText(e.target.value)}
+                  placeholder="@username、username 或 https://x.com/username，每行一个"
+                  className="min-h-24"
+                />
+              </Field>
+              <Button onClick={() => bulkAddBloggers.mutate()} disabled={bulkAddBloggers.isPending || !bulkBloggersText.trim()}>
+                <Plus className="h-4 w-4" />
+                导入到博主列表
+              </Button>
+            </div>
+            {bulkImportMessage && <div className="mt-2 text-xs text-[hsl(var(--muted))]">{bulkImportMessage}</div>}
+          </div>
           <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr))]">
             <Field label="执行周期">
-              <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.schedule_type} onChange={(e) => setForm((prev) => ({ ...prev, schedule_type: e.target.value as ScheduleFormValues['schedule_type'] }))}>
+              <select className={scheduleSelectClass} value={form.schedule_type} onChange={(e) => setForm((prev) => ({ ...prev, schedule_type: e.target.value as ScheduleFormValues['schedule_type'] }))}>
                 <option value="daily">每日</option>
                 <option value="weekly">每周</option>
               </select>
@@ -2698,10 +2817,21 @@ function SchedulesPage() {
             <Check label="下载视频" checked={form.has_video} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, has_video: checked }))} />
             <Check label="去重日志" checked={form.down_log} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, down_log: checked }))} />
             <Check label="输出 Markdown" checked={form.md_output} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, md_output: checked }))} />
+            <Check label="新内容监控" checked={form.monitor_new_content} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, monitor_new_content: checked }))} />
           </div>
+          {form.monitor_new_content && (
+            <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr))]">
+              <Field label="监控间隔（分钟）">
+                <Input type="number" min={5} value={form.monitor_interval_minutes} onChange={(e) => setForm((prev) => ({ ...prev, monitor_interval_minutes: Math.max(5, Number(e.target.value) || 15), first_run_policy: 'baseline' }))} />
+              </Field>
+              <div className="rounded-lg border border-[hsl(var(--line))] bg-[rgba(14,165,233,0.08)] px-3 py-2 text-sm text-[hsl(var(--muted))]">
+                首次监控只建立基线；之后只有发现新内容才自动生成采集任务。
+              </div>
+            </div>
+          )}
           <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr))]">
             <Field label="代理池">
-              <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.proxy_id ?? ''} onChange={(e) => setForm((prev) => ({ ...prev, proxy_id: e.target.value ? Number(e.target.value) : null }))}>
+              <select className={scheduleSelectClass} value={form.proxy_id ?? ''} onChange={(e) => setForm((prev) => ({ ...prev, proxy_id: e.target.value ? Number(e.target.value) : null }))}>
                 <option value="">不使用代理池</option>
                 {usableProxies.map((proxy) => <option key={proxy.id} value={proxy.id}>{proxy.label}</option>)}
               </select>
@@ -2736,7 +2866,16 @@ function SchedulesPage() {
                   <tr key={schedule.id} className="border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]">
                     <td className="px-4 py-3"><div className="font-medium">#{schedule.id} {schedule.name}</div><div className="mt-1 text-xs text-[hsl(var(--muted))]">{schedule.username || '-'}</div></td>
                     <td className="px-4 py-3"><Badge tone={schedule.enabled ? 'success' : 'neutral'}>{schedule.enabled ? '已启用' : '已停用'}</Badge></td>
-                    <td className="px-4 py-3">{schedule.schedule_type === 'daily' ? '每日' : `每周 ${schedule.weekdays.map((day) => WEEKDAYS.find((item) => item.value === day)?.label).join(' ')}`} · {schedule.run_time}</td>
+                    <td className="px-4 py-3">
+                      {schedule.config.monitor_new_content ? (
+                        <div>
+                          <Badge tone="primary">监控</Badge>
+                          <div className="mt-1 text-xs text-[hsl(var(--muted))]">每 {String(schedule.config.monitor_interval_minutes || 15)} 分钟检查</div>
+                        </div>
+                      ) : (
+                        <span>{schedule.schedule_type === 'daily' ? '每日' : `每周 ${schedule.weekdays.map((day) => WEEKDAYS.find((item) => item.value === day)?.label).join(' ')}`} · {schedule.run_time}</span>
+                      )}
+                    </td>
                     <td className="max-w-[260px] truncate px-4 py-3">{String(schedule.config.targets || '-')}</td>
                     <td className="px-4 py-3">{schedule.next_run_at || '-'}</td>
                     <td className="px-4 py-3">{schedule.consecutive_failures}{schedule.last_error ? <div className="max-w-[220px] truncate text-xs text-[hsl(var(--danger))]">{schedule.last_error}</div> : null}</td>
@@ -2755,6 +2894,7 @@ function SchedulesPage() {
 }
 
 function OperationLogsPage() {
+  const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const [level, setLevel] = useState('');
   const [eventType, setEventType] = useState('');
@@ -2762,11 +2902,14 @@ function OperationLogsPage() {
   const [query, setQuery] = useState('');
   const [startAt, setStartAt] = useState('');
   const [endAt, setEndAt] = useState('');
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [offset, setOffset] = useState(0);
   const limit = 100;
   const taskId = Number(searchParams.get('task_id') || 0) || undefined;
   const scheduleId = Number(searchParams.get('schedule_id') || 0) || undefined;
-  const params = {
+  const filters = {
     task_id: taskId,
     schedule_id: scheduleId,
     level: level || undefined,
@@ -2775,6 +2918,9 @@ function OperationLogsPage() {
     q: query || undefined,
     start_at: startAt ? `${startAt} 00:00:00` : undefined,
     end_at: endAt ? `${endAt} 23:59:59` : undefined,
+  };
+  const params = {
+    ...filters,
     offset,
     limit,
   };
@@ -2784,12 +2930,58 @@ function OperationLogsPage() {
   const canPrev = offset > 0;
   const canNext = offset + limit < total;
   const resetPage = () => setOffset(0);
+  const hasFilter = Boolean(taskId || scheduleId || level || eventType || errorType || query || startAt || endAt);
+  const deleteLog = useMutation({
+    mutationFn: (id: number) => api.deleteOperationLog(id),
+    onSuccess: async () => {
+      setError('');
+      setMessage('日志已删除');
+      if (logs.length === 1 && offset > 0) {
+        setOffset(Math.max(0, offset - limit));
+      }
+      await queryClient.invalidateQueries({ queryKey: ['operation-logs'] });
+    },
+    onError: (err: Error) => {
+      setMessage('');
+      setError(err.message);
+    },
+  });
+  const deleteFilteredLogs = useMutation({
+    mutationFn: () => api.deleteOperationLogs(filters),
+    onSuccess: async (res) => {
+      setError('');
+      setMessage(`已删除 ${res.deleted} 条运维日志`);
+      setOffset(0);
+      await queryClient.invalidateQueries({ queryKey: ['operation-logs'] });
+    },
+    onError: (err: Error) => {
+      setMessage('');
+      setError(err.message);
+    },
+  });
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 30000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const handleDeleteLog = (log: OperationLog) => {
+    if (window.confirm(`确定删除这条运维日志吗？\n#${log.id} · ${levelLabel(log.level)} · ${log.event_type}`)) {
+      deleteLog.mutate(log.id);
+    }
+  };
+  const handleDeleteFilteredLogs = () => {
+    const scope = hasFilter ? '当前筛选结果' : '全部运维日志';
+    if (window.confirm(`确定删除${scope}吗？此操作不可恢复。`)) {
+      deleteFilteredLogs.mutate();
+    }
+  };
   return (
     <div className="space-y-4">
       <div>
         <h2 className="text-2xl font-semibold">运维日志</h2>
         <p className="mt-1 text-sm text-[hsl(var(--muted))]">记录任务创建、调度、执行、失败分类和重试事件。{taskId ? `当前筛选任务 #${taskId}` : ''}{scheduleId ? `当前筛选计划 #${scheduleId}` : ''}</p>
       </div>
+      {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
+      {message && <div className="rounded-lg border border-[hsl(var(--success))] bg-[rgba(34,197,94,0.12)] px-3 py-2 text-sm text-[hsl(var(--success))]">{message}</div>}
       <ActionBar>
         <select className="h-10 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3 text-sm" value={level} onChange={(e) => setLevel(e.target.value)}>
           <option value="">全部级别</option>
@@ -2804,8 +2996,11 @@ function OperationLogsPage() {
         <Input className="w-40" type="date" value={endAt} onChange={(e) => { setEndAt(e.target.value); resetPage(); }} />
         <Button variant="secondary" onClick={() => { setLevel(''); setEventType(''); setErrorType(''); setQuery(''); setStartAt(''); setEndAt(''); setOffset(0); }}>清空筛选</Button>
         <Button variant="secondary" onClick={() => refetch()}><RefreshCcw className="h-4 w-4" />刷新</Button>
+        <Button variant="danger" onClick={handleDeleteFilteredLogs} disabled={deleteFilteredLogs.isPending || !total}>
+          {deleteFilteredLogs.isPending ? '删除中...' : hasFilter ? '删除筛选结果' : '删除全部日志'}
+        </Button>
       </ActionBar>
-      <OperationLogTable logs={logs} />
+      <OperationLogTable logs={logs} nowMs={nowMs} onDelete={handleDeleteLog} deletingId={deleteLog.variables ?? null} />
       <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-[hsl(var(--muted))]">
         <div>共 {total} 条，当前 {total ? offset + 1 : 0}-{Math.min(offset + limit, total)}</div>
         <div className="flex gap-2">
@@ -2982,7 +3177,10 @@ function ResultDbPage() {
 function AccountsPage() {
   const queryClient = useQueryClient();
   const { data } = useQuery({ queryKey: ['accounts'], queryFn: () => api.accounts(), refetchInterval: 8000 });
+  const { data: proxiesData } = useQuery({ queryKey: ['proxies'], queryFn: () => api.proxies(), refetchInterval: 8000 });
   const accounts = data?.accounts || [];
+  const proxies = proxiesData?.proxies || [];
+  const proxyOptions = proxies.filter((proxy) => proxy.enabled);
   const capacityAccounts = accounts.filter((account) => account.capacity);
   const averageCapacity = capacityAccounts.length
     ? Math.round(capacityAccounts.reduce((sum, account) => sum + (account.capacity?.score || 0), 0) / capacityAccounts.length)
@@ -2999,12 +3197,14 @@ function AccountsPage() {
   const [browserLoginStatus, setBrowserLoginStatus] = useState('');
   const [browserLoginMessage, setBrowserLoginMessage] = useState('');
   const [browserLoginLabel, setBrowserLoginLabel] = useState('');
+  const [browserLoginProxyId, setBrowserLoginProxyId] = useState<number | null>(null);
   const [loginQueueText, setLoginQueueText] = useState('');
   const [loginQueuePreview, setLoginQueuePreview] = useState<LoginQueueParseResponse | null>(null);
   const [queueHelperError, setQueueHelperError] = useState('');
   const [expandedAccountId, setExpandedAccountId] = useState<number | null>(null);
   const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
   const [editingAccountLabel, setEditingAccountLabel] = useState('');
+  const [editingAccountProxyId, setEditingAccountProxyId] = useState<number | null>(null);
   const startedQueueTokenRef = useRef('');
   const addAccount = useMutation({
     mutationFn: () => api.addAccount(form),
@@ -3046,45 +3246,64 @@ function AccountsPage() {
     }
     return body;
   };
+  const openLocalHelperWithFallback = async (session: { token: string; callback_url?: string; expires_in: number }) => {
+    try {
+      const body = await openLocalHelperWindow(session);
+      return {
+        status: 'running',
+        message: body.message || '已打开这台电脑的 Chrome，请在弹出的窗口完成 X 登录；Cookie 会自动回传到 VPS。',
+      };
+    } catch (firstErr) {
+      setBrowserLoginMessage('未检测到已运行的本地授权助手，正在判断是否可由本机后端自动启动...');
+      let helper: LocalBrowserLoginHelperStatus | null = null;
+      try {
+        helper = await api.ensureLocalBrowserLoginHelper();
+      } catch {
+        helper = null;
+      }
+      if (helper?.ok || helper?.status === 'ready') {
+        setBrowserLoginMessage('本机授权助手已自动启动，正在打开 Chrome...');
+        const body = await openLocalHelperWindow(session);
+        return {
+          status: 'running',
+          message: body.message || '已自动启动本机授权助手并打开 Chrome，请在弹出的窗口完成 X 登录；Cookie 会自动回传到 VPS。',
+        };
+      }
+      if (helper && helperCanAutoStartOnBackend(helper)) {
+        throw new Error(helper.message || '本机授权助手自动启动后仍未响应。请稍后重试，或手动运行 start_local_login_helper.bat。');
+      }
+      setBrowserLoginMessage('当前后端不能直接启动这台电脑的助手，正在尝试通过本机协议唤起...');
+      window.location.href = 'tw-login-helper://start';
+      await wait(1200);
+      try {
+        const body = await openLocalHelperWindow(session);
+        return {
+          status: 'running',
+          message: body.message || '已自动唤起本地助手并打开 Chrome，请在弹出的窗口完成 X 登录；Cookie 会自动回传到 VPS。',
+        };
+      } catch (secondErr) {
+        const message = localHelperErrorMessage(secondErr instanceof Error ? secondErr : firstErr, 'remote');
+        return {
+          status: 'helper_missing',
+          message: `${message} VPS 授权任务仍在等待。`,
+        };
+      }
+    }
+  };
   const browserLogin = useMutation({
     mutationFn: async () => {
       setBrowserLoginOpen(true);
       setBrowserLoginToken('');
       setBrowserLoginStatus('pending');
       setBrowserLoginMessage('正在向 VPS 创建授权任务...');
-      const session = await api.localBrowserLoginStart({ label: browserLoginLabel.trim() });
+      const session = await api.localBrowserLoginStart({ label: browserLoginLabel.trim(), bound_proxy_id: browserLoginProxyId });
       setBrowserLoginToken(session.token);
       setBrowserLoginCallbackUrl(session.callback_url || '');
       setBrowserLoginExpiresIn(session.expires_in);
       setBrowserLoginStatus('helper_starting');
       setBrowserLoginMessage('授权任务已在 VPS 创建，正在自动连接这台电脑上的本地授权助手...');
-      try {
-        const body = await openLocalHelperWindow(session);
-        return {
-          ...session,
-          status: 'running',
-          message: body.message || '已打开这台电脑的 Chrome，请在弹出的窗口完成 X 登录；Cookie 会自动回传到 VPS。',
-        };
-      } catch (firstErr) {
-        setBrowserLoginMessage('未检测到已运行的本地授权助手，正在尝试自动唤起...');
-        window.location.href = 'tw-login-helper://start';
-        await wait(1200);
-        try {
-          const body = await openLocalHelperWindow(session);
-          return {
-            ...session,
-            status: 'running',
-            message: body.message || '已自动唤起本地助手并打开 Chrome，请在弹出的窗口完成 X 登录；Cookie 会自动回传到 VPS。',
-          };
-        } catch (secondErr) {
-          const message = localHelperErrorMessage(secondErr instanceof Error ? secondErr : firstErr);
-          return {
-            ...session,
-            status: 'helper_missing',
-            message: `${message} VPS 授权任务已创建，不需要登录 VPS。`,
-          };
-        }
-      }
+      const result = await openLocalHelperWithFallback(session);
+      return { ...session, ...result };
     },
     onSuccess: (res) => {
       setError('');
@@ -3096,6 +3315,7 @@ function AccountsPage() {
       setBrowserLoginMessage(res.message);
       if (res.status === 'running') {
         setBrowserLoginLabel('');
+        setBrowserLoginProxyId(null);
       }
     },
     onError: (err: Error) => setError(err.message),
@@ -3188,11 +3408,12 @@ function AccountsPage() {
     onError: (err: Error) => setError(err.message),
   });
   const updateAccount = useMutation({
-    mutationFn: ({ id, label }: { id: number; label: string }) => api.updateAccount(id, { label }),
+    mutationFn: ({ id, label, bound_proxy_id }: { id: number; label: string; bound_proxy_id: number | null }) => api.updateAccount(id, { label, bound_proxy_id }),
     onSuccess: () => {
       setError('');
       setEditingAccountId(null);
       setEditingAccountLabel('');
+      setEditingAccountProxyId(null);
       queryClient.invalidateQueries({ queryKey: ['accounts'] });
     },
     onError: (err: Error) => setError(err.message),
@@ -3245,30 +3466,16 @@ function AccountsPage() {
     setBrowserLoginStatus('helper_starting');
     setBrowserLoginMessage('正在自动连接这台电脑上的本地授权助手...');
     try {
-      const body = await openLocalHelperWindow({
+      const result = await openLocalHelperWithFallback({
         token: browserLoginToken,
         callback_url: browserLoginCallbackUrl,
         expires_in: browserLoginExpiresIn,
       });
-      setBrowserLoginStatus('running');
-      setBrowserLoginMessage(body.message || '已打开这台电脑的 Chrome，请在弹出的窗口完成 X 登录；Cookie 会自动回传到 VPS。');
-    } catch (firstErr) {
-      setBrowserLoginMessage('未检测到已运行的本地授权助手，正在尝试自动唤起...');
-      window.location.href = 'tw-login-helper://start';
-      await wait(1200);
-      try {
-        const body = await openLocalHelperWindow({
-          token: browserLoginToken,
-          callback_url: browserLoginCallbackUrl,
-          expires_in: browserLoginExpiresIn,
-        });
-        setBrowserLoginStatus('running');
-        setBrowserLoginMessage(body.message || '已自动唤起本地助手并打开 Chrome，请在弹出的窗口完成 X 登录；Cookie 会自动回传到 VPS。');
-      } catch (secondErr) {
-        setBrowserLoginStatus('helper_missing');
-        const message = localHelperErrorMessage(secondErr instanceof Error ? secondErr : firstErr);
-        setBrowserLoginMessage(`${message} VPS 授权任务仍在等待。`);
-      }
+      setBrowserLoginStatus(result.status);
+      setBrowserLoginMessage(result.message);
+    } catch (err) {
+      setBrowserLoginStatus('helper_missing');
+      setBrowserLoginMessage(`${localHelperErrorMessage(err, 'local')} VPS 授权任务仍在等待。`);
     }
   };
   const startOneClickLocalLogin = () => {
@@ -3293,6 +3500,18 @@ function AccountsPage() {
           placeholder="登录账号备注"
           maxLength={80}
         />
+        <select
+          className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3 text-sm sm:w-[260px]"
+          value={browserLoginProxyId ?? ''}
+          onChange={(event) => setBrowserLoginProxyId(event.target.value ? Number(event.target.value) : null)}
+        >
+          <option value="">授权后不绑定代理</option>
+          {proxyOptions.map((proxy) => (
+            <option key={proxy.id} value={proxy.id}>
+              {proxy.label} · {proxy.detected_ip || proxyStatusLabel(proxy)}
+            </option>
+          ))}
+        </select>
         <Button onClick={startOneClickLocalLogin} disabled={browserLogin.isPending || browserLoginStatus === 'running' || browserLoginStatus === 'helper_starting'}>
           <CircleUserRound className="h-4 w-4" />
           开始本地授权
@@ -3506,9 +3725,25 @@ function AccountsPage() {
 
       <div className="grid gap-3 md:grid-cols-3">
         <InfoCard title="可尝试未确认账号" value={String(accounts.filter((account) => account.status === 'unknown' || account.status === 'check_failed').length)} />
-        <InfoCard title="最近检测" value={accounts[0]?.last_checked_at || '-'} />
+        <InfoCard title="已绑定代理" value={String(accounts.filter((account) => account.bound_proxy_id).length)} />
         <InfoCard title="估算剩余 API" value={String(accounts.reduce((sum, account) => sum + (account.capacity?.api_remaining_estimate || 0), 0))} />
       </div>
+
+      <Card>
+        <CardContent className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm">
+          <div className="min-w-0">
+            <div className="font-semibold">账号养护 / 健康保护</div>
+            <div className="mt-1 max-w-[780px] truncate text-xs text-[hsl(var(--muted))]">
+              已启用冷启动保护、每日额度、最小间隔、冷却和风险收敛；VPS 多账号建议绑定稳定代理，绑定代理不可用时会回退自动代理。
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Badge tone="primary">健康保护</Badge>
+            <Badge tone="warning">新号低频</Badge>
+            <Badge tone="neutral">无自动互动</Badge>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
@@ -3590,13 +3825,14 @@ function AccountsPage() {
       <Card>
         <CardContent className="p-0">
           <div className="overflow-auto">
-            <table className="w-full min-w-[1320px] border-collapse text-sm">
+            <table className="w-full min-w-[1460px] border-collapse text-sm">
               <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
                 <tr>
                   <th className="w-16 px-4 py-3">ID</th>
                   <th className="w-[240px] px-4 py-3">名称</th>
                   <th className="w-[160px] px-4 py-3">用户名</th>
                   <th className="w-[190px] px-4 py-3">状态</th>
+                  <th className="w-[190px] px-4 py-3">绑定代理</th>
                   <th className="w-[160px] px-4 py-3">调度</th>
                   <th className="w-[220px] px-4 py-3">额度 / 治理</th>
                   <th className="w-[160px] px-4 py-3">检测时间</th>
@@ -3614,12 +3850,26 @@ function AccountsPage() {
                         <td className="px-4 py-2 whitespace-nowrap">#{account.id}</td>
                         <td className="px-4 py-2">
                           {editing ? (
-                            <Input
-                              value={editingAccountLabel}
-                              onChange={(event) => setEditingAccountLabel(event.target.value)}
-                              className="h-8"
-                              maxLength={80}
-                            />
+                            <div className="grid gap-2">
+                              <Input
+                                value={editingAccountLabel}
+                                onChange={(event) => setEditingAccountLabel(event.target.value)}
+                                className="h-8"
+                                maxLength={80}
+                              />
+                              <select
+                                className="h-8 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-2 text-xs"
+                                value={editingAccountProxyId ?? ''}
+                                onChange={(event) => setEditingAccountProxyId(event.target.value ? Number(event.target.value) : null)}
+                              >
+                                <option value="">不绑定代理</option>
+                                {proxyOptions.map((proxy) => (
+                                  <option key={proxy.id} value={proxy.id}>
+                                    {proxy.label} · {proxy.detected_ip || proxyStatusLabel(proxy)}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
                           ) : (
                             <div className="max-w-[220px] truncate font-medium" title={account.label}>{account.label}</div>
                           )}
@@ -3631,6 +3881,16 @@ function AccountsPage() {
                           <div className="flex min-w-0 items-center gap-2">
                             <Badge tone={statusTone(account.status)}>{statusLabel(account.status)}</Badge>
                             <span className="min-w-0 truncate text-xs text-[hsl(var(--muted))]">{accountUsabilityDescription(account)}</span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-2">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <Badge tone={account.bound_proxy_id ? (account.bound_proxy_available ? 'success' : 'warning') : 'neutral'}>
+                              {account.bound_proxy_id ? '已绑定' : '自动'}
+                            </Badge>
+                            <span className="min-w-0 max-w-[120px] truncate text-xs text-[hsl(var(--muted))]" title={accountBoundProxySummary(account)}>
+                              {accountBoundProxySummary(account)}
+                            </span>
                           </div>
                         </td>
                         <td className="px-4 py-2">
@@ -3654,17 +3914,17 @@ function AccountsPage() {
                           <div className="flex justify-end gap-2">
                             {editing ? (
                               <>
-                                <Button variant="secondary" size="sm" onClick={() => updateAccount.mutate({ id: account.id, label: editingAccountLabel.trim() })} disabled={updateAccount.isPending || !editingAccountLabel.trim()}>
+                                <Button variant="secondary" size="sm" onClick={() => updateAccount.mutate({ id: account.id, label: editingAccountLabel.trim(), bound_proxy_id: editingAccountProxyId })} disabled={updateAccount.isPending || !editingAccountLabel.trim()}>
                                   <Save className="h-4 w-4" />
                                   保存
                                 </Button>
-                                <Button variant="secondary" size="sm" onClick={() => { setEditingAccountId(null); setEditingAccountLabel(''); }}>
+                                <Button variant="secondary" size="sm" onClick={() => { setEditingAccountId(null); setEditingAccountLabel(''); setEditingAccountProxyId(null); }}>
                                   取消
                                 </Button>
                               </>
                             ) : (
                               <>
-                                <Button variant="secondary" size="sm" onClick={() => { setEditingAccountId(account.id); setEditingAccountLabel(account.label); }}>
+                                <Button variant="secondary" size="sm" onClick={() => { setEditingAccountId(account.id); setEditingAccountLabel(account.label); setEditingAccountProxyId(account.bound_proxy_id); }}>
                                   <Edit3 className="h-4 w-4" />
                                   编辑
                                 </Button>
@@ -3689,8 +3949,8 @@ function AccountsPage() {
                       </tr>
                       {expanded && (
                         <tr key={`${account.id}-details`} className="border-t border-[hsl(var(--line))] bg-[rgba(15,23,42,0.38)]">
-                          <td className="px-4 py-4" colSpan={9}>
-                            <div className="grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-4">
+                          <td className="px-4 py-4" colSpan={10}>
+                            <div className="grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-5">
                               <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2">
                                 <div className="text-xs text-[hsl(var(--muted))]">状态详情</div>
                                 <div className="mt-1">{accountUsabilityDescription(account)}</div>
@@ -3717,6 +3977,16 @@ function AccountsPage() {
                                 <div className="mt-1 text-xs text-[hsl(var(--muted))]">冷却至：{account.cooldown_until || '-'}</div>
                               </div>
                               <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2">
+                                <div className="text-xs text-[hsl(var(--muted))]">绑定代理 / IP</div>
+                                <div className="mt-1 flex flex-wrap items-center gap-2">
+                                  <Badge tone={account.bound_proxy_id ? (account.bound_proxy_available ? 'success' : 'warning') : 'neutral'}>
+                                    {account.bound_proxy_id ? '优先绑定' : '自动分配'}
+                                  </Badge>
+                                  <span className="truncate">{accountBoundProxySummary(account)}</span>
+                                </div>
+                                <div className="mt-2 text-xs text-[hsl(var(--muted))]">任务未手动指定代理时优先使用绑定代理；不可用时回退自动代理。</div>
+                              </div>
+                              <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2">
                                 <div className="text-xs text-[hsl(var(--muted))]">检测 / 错误</div>
                                 {account.capacity?.adaptive_policy && (
                                   <div className="mt-1 flex flex-wrap items-center gap-2">
@@ -3736,7 +4006,7 @@ function AccountsPage() {
                   );
                 })}
                 {!accounts.length && (
-                  <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={9}>还没有账号</td></tr>
+                  <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={10}>还没有账号</td></tr>
                 )}
               </tbody>
             </table>

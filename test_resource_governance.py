@@ -612,6 +612,60 @@ class ResourceGovernanceTest(unittest.TestCase):
 
         self.assertEqual(selected['label'], 'ready')
 
+    def test_account_bound_proxy_is_preferred_for_auto_proxy_selection(self):
+        with web_app.db() as conn:
+            proxy_id = conn.execute(
+                '''
+                insert into proxies (label, proxy, enabled, status, created_at)
+                values (?, ?, 1, 'active', ?)
+                ''',
+                ('bound', 'http://127.0.0.1:8080', web_app.now()),
+            ).lastrowid
+            conn.execute(
+                '''
+                insert into proxies (label, proxy, enabled, status, created_at)
+                values (?, ?, 1, 'active', ?)
+                ''',
+                ('fallback', 'http://127.0.0.1:8081', web_app.now()),
+            )
+            account_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, created_at, bound_proxy_id)
+                values (?, ?, ?, ?, ?, 'active', ?, ?)
+                ''',
+                ('bound-account', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'boundacct', web_app.now(), proxy_id),
+            ).lastrowid
+            selected = web_app.select_proxy_for_task_in_conn(conn, account_id=account_id)
+
+        self.assertEqual(selected['label'], 'bound')
+
+    def test_account_bound_proxy_falls_back_when_unavailable(self):
+        with web_app.db() as conn:
+            proxy_id = conn.execute(
+                '''
+                insert into proxies (label, proxy, enabled, status, created_at, cooldown_until)
+                values (?, ?, 1, 'check_failed', ?, ?)
+                ''',
+                ('bound-failed', 'http://127.0.0.1:8080', web_app.now(), web_app.seconds_from_now(1800)),
+            ).lastrowid
+            conn.execute(
+                '''
+                insert into proxies (label, proxy, enabled, status, created_at)
+                values (?, ?, 1, 'active', ?)
+                ''',
+                ('fallback-ready', 'http://127.0.0.1:8081', web_app.now()),
+            )
+            account_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, created_at, bound_proxy_id)
+                values (?, ?, ?, ?, ?, 'active', ?, ?)
+                ''',
+                ('fallback-account', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'fallbackacct', web_app.now(), proxy_id),
+            ).lastrowid
+            selected = web_app.select_proxy_for_task_in_conn(conn, account_id=account_id)
+
+        self.assertEqual(selected['label'], 'fallback-ready')
+
     def test_health_check_skips_recently_checked_proxies(self):
         old_checked_at = (web_app.datetime.now() - web_app.timedelta(seconds=web_app.PROXY_HEALTH_MIN_INTERVAL_SECONDS + 30)).strftime('%Y-%m-%d %H:%M:%S')
         with web_app.db() as conn:
