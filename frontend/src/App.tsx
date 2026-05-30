@@ -131,7 +131,7 @@ const NAV_ITEMS = [
 function statusTone(status: string): BadgeTone {
   if (status === 'completed' || status === 'active' || status === 'finished') return 'success';
   if (status === 'running') return 'primary';
-  if (status === 'queued' || status === 'pending' || status === 'unknown' || status === 'check_failed' || status === 'rate_limited' || status === 'partial_failed' || status === 'network_failed' || status === 'stopping' || status === 'disabled' || status === 'helper_missing') return 'warning';
+  if (status === 'queued' || status === 'pending' || status === 'unknown' || status === 'check_failed' || status === 'rate_limited' || status === 'partial_failed' || status === 'network_failed' || status === 'stopping' || status === 'disabled' || status === 'helper_missing' || status === 'helper_starting') return 'warning';
   if (status === 'failed' || status === 'cancelled' || status === 'expired' || status === 'auth_expired' || status === 'target_unavailable' || status === 'api_changed') return 'danger';
   return 'neutral';
 }
@@ -157,7 +157,8 @@ function statusLabel(status: string) {
     disabled: '已停用',
     pending: '等待中',
     skipped: '已跳过',
-    helper_missing: '助手未启动',
+    helper_missing: '助手未就绪',
+    helper_starting: '助手启动中',
     idle: '空闲',
     stopping: '停止中',
     stopped: '已停止',
@@ -191,6 +192,7 @@ function statusDescription(status: string) {
     pending: '等待前一个登录窗口完成。',
     skipped: '已从队列跳过。',
     helper_missing: '本地登录助手没有响应。',
+    helper_starting: '本地登录助手正在启动。',
     idle: '当前没有运行中的任务。',
     stopping: '正在停止当前任务。',
     stopped: '任务已停止。',
@@ -1196,6 +1198,42 @@ function InfoCard({ title, value }: { title: string; value: string }) {
   );
 }
 
+function CollapsibleTaskCard({
+  title,
+  summary,
+  defaultOpen = false,
+  contentClassName,
+  children,
+}: {
+  title: string;
+  summary?: string;
+  defaultOpen?: boolean;
+  contentClassName?: string;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  return (
+    <Card>
+      <CardHeader className="p-0">
+        <button
+          type="button"
+          className="flex min-h-12 w-full cursor-pointer items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-[rgba(14,165,233,0.08)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))] focus-visible:ring-offset-2 focus-visible:ring-offset-[hsl(var(--panel))]"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <span className="flex min-w-0 items-center gap-2 font-semibold text-[hsl(var(--text))]">
+            {open ? <ChevronDown className="h-4 w-4 shrink-0 text-[hsl(var(--muted))]" /> : <ChevronRight className="h-4 w-4 shrink-0 text-[hsl(var(--muted))]" />}
+            <span className="truncate">{title}</span>
+          </span>
+          {summary && <span className="shrink-0 text-xs text-[hsl(var(--muted))]">{summary}</span>}
+        </button>
+      </CardHeader>
+      {open && <CardContent className={contentClassName}>{children}</CardContent>}
+    </Card>
+  );
+}
+
 function formatBytes(value: number) {
   if (!value) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -1879,6 +1917,9 @@ function TaskDetailPage({ id }: { id: number }) {
     : [];
   const adaptivePolicy = task.config?.adaptive_policy as { risk_level?: string; recommended_action?: string } | undefined;
   const adaptiveThrottleApplied = task.config?.adaptive_throttle_applied === true;
+  const configCount = Object.keys(task.config || {}).length;
+  const logLineCount = task.log?.trim() ? task.log.trim().split(/\r?\n/).length : 0;
+  const fileCount = task.files?.length || 0;
 
   return (
     <div className="space-y-4">
@@ -2051,43 +2092,34 @@ function TaskDetailPage({ id }: { id: number }) {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
-        <Card>
-          <CardHeader><h3 className="font-semibold">配置</h3></CardHeader>
-          <CardContent>
-            <pre className="overflow-auto rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-4 text-xs leading-6 text-[hsl(var(--text))]">{JSON.stringify(task.config || {}, null, 2)}</pre>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader><h3 className="font-semibold">日志</h3></CardHeader>
-          <CardContent>
-            <pre className="max-h-[540px] overflow-auto whitespace-pre-wrap rounded-lg border border-[hsl(var(--line))] bg-[#020617] p-4 text-xs leading-6 text-slate-100">{task.log || '还没有日志'}</pre>
-          </CardContent>
-        </Card>
+        <CollapsibleTaskCard title="配置" summary={`${configCount} 项`}>
+          <pre className="overflow-auto rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-4 text-xs leading-6 text-[hsl(var(--text))]">{JSON.stringify(task.config || {}, null, 2)}</pre>
+        </CollapsibleTaskCard>
+        <CollapsibleTaskCard title="日志" summary={logLineCount ? `${logLineCount} 行` : '暂无日志'}>
+          <pre className="max-h-[540px] overflow-auto whitespace-pre-wrap rounded-lg border border-[hsl(var(--line))] bg-[#020617] p-4 text-xs leading-6 text-slate-100">{task.log || '还没有日志'}</pre>
+        </CollapsibleTaskCard>
       </div>
 
-      <Card>
-        <CardHeader><h3 className="font-semibold">文件</h3></CardHeader>
-        <CardContent className="p-0">
-          <div className="overflow-auto">
-            <table className="w-full min-w-[800px] border-collapse text-sm">
-              <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
-                <tr><th className="px-4 py-3">文件</th><th className="px-4 py-3">大小</th></tr>
-              </thead>
-              <tbody>
-                {(task.files || []).map((file) => (
-                  <tr key={file.name} className="border-t border-[hsl(var(--line))]">
-                    <td className="px-4 py-3">{file.name}</td>
-                    <td className="px-4 py-3">{file.size} bytes</td>
-                  </tr>
-                ))}
-                {!task.files?.length && (
-                  <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={2}>还没有输出文件</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
+      <CollapsibleTaskCard title="文件" summary={`${fileCount} 个文件`} contentClassName="p-0">
+        <div className="overflow-auto">
+          <table className="w-full min-w-[800px] border-collapse text-sm">
+            <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
+              <tr><th className="px-4 py-3">文件</th><th className="px-4 py-3">大小</th></tr>
+            </thead>
+            <tbody>
+              {(task.files || []).map((file) => (
+                <tr key={file.name} className="border-t border-[hsl(var(--line))]">
+                  <td className="px-4 py-3">{file.name}</td>
+                  <td className="px-4 py-3">{file.size} bytes</td>
+                </tr>
+              ))}
+              {!task.files?.length && (
+                <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={2}>还没有输出文件</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </CollapsibleTaskCard>
     </div>
   );
 }
@@ -2862,6 +2894,16 @@ function AccountsPage() {
   });
   const browserLogin = useMutation({
     mutationFn: async () => {
+      const helper = await api.ensureLocalBrowserLoginHelper();
+      if (!helper.ok) {
+        return {
+          token: '',
+          expires_in: 0,
+          callback_url: '',
+          status: helper.status === 'starting' ? 'helper_starting' : 'helper_missing',
+          message: helper.message || '本地登录助手暂未就绪，请稍后重试。',
+        };
+      }
       const session = await api.localBrowserLoginStart();
       try {
         const response = await fetch('http://127.0.0.1:18765/start', {
@@ -2878,7 +2920,7 @@ function AccountsPage() {
           return {
             ...session,
             status: 'helper_missing',
-            message: body.message || '本地登录助手没有响应，请先启动助手后重试。',
+            message: body.message || '本地登录助手没有响应，系统已尝试自动启动；请稍后重试，或手动运行 start_local_login_helper.bat。',
           };
         }
         return {
@@ -2890,7 +2932,7 @@ function AccountsPage() {
         return {
           ...session,
           status: 'helper_missing',
-          message: '未检测到本地登录助手。请先双击 start_local_login_helper.bat，保持窗口打开后再重试。',
+          message: '未检测到本地登录助手，系统已尝试自动启动；请稍后重试，或手动运行 start_local_login_helper.bat。',
         };
       }
     },
@@ -2906,7 +2948,7 @@ function AccountsPage() {
   const browserLoginStatusQuery = useQuery({
     queryKey: ['local-browser-login-status', browserLoginToken],
     queryFn: () => api.localBrowserLoginStatus(browserLoginToken),
-    enabled: browserLoginOpen && Boolean(browserLoginToken) && !['helper_missing', 'completed', 'failed', 'expired', 'cancelled'].includes(browserLoginStatus),
+    enabled: browserLoginOpen && Boolean(browserLoginToken) && !['helper_missing', 'helper_starting', 'completed', 'failed', 'expired', 'cancelled'].includes(browserLoginStatus),
     refetchInterval: browserLoginOpen ? 2500 : false,
   });
   const cancelBrowserLogin = useMutation({
@@ -2964,22 +3006,29 @@ function AccountsPage() {
     if (!active.token || LOGIN_QUEUE_TERMINAL_STATUSES.has(active.status)) return;
     startedQueueTokenRef.current = active.token;
     setQueueHelperError('');
-    fetch('http://127.0.0.1:18765/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        token: active.token,
-        callback_url: loginQueueQuery.data?.callback_url,
-        expires_in: active.expires_in,
-      }),
+    api.ensureLocalBrowserLoginHelper().then((helper) => {
+      if (!helper.ok) {
+        setQueueHelperError(helper.message || '本地登录助手暂未就绪，请稍后重试。');
+        return;
+      }
+      return fetch('http://127.0.0.1:18765/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: active.token,
+          callback_url: loginQueueQuery.data?.callback_url,
+          expires_in: active.expires_in,
+        }),
+      });
     })
       .then(async (response) => {
+        if (!response) return;
         const body = await response.json().catch(() => ({}));
         if (!response.ok) {
-          setQueueHelperError(body.message || '本地登录助手没有响应，请先启动助手后重试当前队列项。');
+          setQueueHelperError(body.message || '本地登录助手没有响应，系统已尝试自动启动；请稍后重试当前队列项。');
         }
       })
-      .catch(() => setQueueHelperError('未检测到本地登录助手。请先双击 start_local_login_helper.bat，保持窗口打开后重试当前队列项。'));
+      .catch((err: Error) => setQueueHelperError(err.message || '本地登录助手自动启动失败；请稍后重试，或手动运行 start_local_login_helper.bat。'));
   };
   const checkAccount = useMutation({
     mutationFn: (id: number) => api.checkAccount(id),
@@ -3023,7 +3072,8 @@ function AccountsPage() {
   const browserLoginStatusText = {
     pending: '等待助手',
     running: '等待登录',
-    helper_missing: '助手未启动',
+    helper_missing: '助手未就绪',
+    helper_starting: '助手启动中',
     completed: '已完成',
     failed: '失败',
     expired: '已超时',
@@ -3066,9 +3116,9 @@ function AccountsPage() {
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
-            {browserLoginStatus === 'helper_missing' ? (
+            {browserLoginStatus === 'helper_missing' || browserLoginStatus === 'helper_starting' ? (
               <div className="rounded-lg border border-[hsl(var(--warning))] bg-[rgba(251,191,36,0.12)] px-4 py-3 text-sm text-[hsl(var(--text))]">
-                请先在本机双击项目目录里的 start_local_login_helper.bat，看到“本地 Chrome 授权登录助手已启动”后再点击重试。
+                {browserLoginMessage || '系统正在尝试启动本地 Chrome 登录助手；如果持续失败，可手动运行 start_local_login_helper.bat 作为兜底。'}
               </div>
             ) : browserLoginStatus === 'completed' ? (
               <div className="rounded-lg border border-[hsl(var(--success))] bg-[rgba(34,197,94,0.12)] px-4 py-3 text-sm text-[hsl(var(--text))]">
@@ -3080,16 +3130,16 @@ function AccountsPage() {
               </div>
             ) : (
               <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-4 py-3 text-sm text-[hsl(var(--muted))]">
-                本地助手会弹出一个临时 Chrome 授权窗口。请在窗口里完成 X 登录，工作台会自动检测并保存 Cookie。
+                系统会自动启动本地助手并弹出临时 Chrome 授权窗口。请在窗口里完成 X 登录，工作台会自动检测并保存 Cookie。
               </div>
             )}
             <div className="flex flex-wrap gap-2">
-              {browserLoginStatus === 'helper_missing' && (
+              {(browserLoginStatus === 'helper_missing' || browserLoginStatus === 'helper_starting') && (
                 <Button variant="secondary" size="sm" onClick={retryLocalHelper} disabled={browserLogin.isPending}>
-                  重试连接助手
+                  重试启动助手
                 </Button>
               )}
-              {browserLoginToken && browserLoginStatus !== 'helper_missing' && browserLoginStatus !== 'completed' && (
+              {browserLoginToken && browserLoginStatus !== 'helper_missing' && browserLoginStatus !== 'helper_starting' && browserLoginStatus !== 'completed' && (
                 <Button variant="secondary" size="sm" onClick={() => browserLoginStatusQuery.refetch()}>
                   检查登录状态
                 </Button>

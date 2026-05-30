@@ -241,6 +241,12 @@ export type LoginQueueResponse = {
   callback_url: string;
 };
 
+export type LocalBrowserLoginHelperStatus = {
+  ok: boolean;
+  status: 'ready' | 'starting' | 'failed' | string;
+  message: string;
+};
+
 export type LoginQueueParseItem = {
   label: string;
 };

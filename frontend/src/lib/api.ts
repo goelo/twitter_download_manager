@@ -1,4 +1,4 @@
-import type { Account, ApiError, BitBrowserImportResponse, Dashboard, DashboardHeatmapItems, HealthStatus, LoginQueueParseResponse, LoginQueueResponse, OperationLogResponse, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, Task, TaskItemsResponse, TrackedBlogger } from './types';
+import type { Account, ApiError, BitBrowserImportResponse, Dashboard, DashboardHeatmapItems, HealthStatus, LocalBrowserLoginHelperStatus, LoginQueueParseResponse, LoginQueueResponse, OperationLogResponse, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, Task, TaskItemsResponse, TrackedBlogger } from './types';
 
 export type LocalBrowserLoginResponse = {
   status: string;
@@ -121,6 +121,7 @@ export const api = {
   accounts: () => request<{ accounts: Account[] }>('/api/accounts'),
   addAccount: (payload: Record<string, unknown>) => request<{ ok: boolean }>('/api/accounts/manual', { method: 'POST', body: JSON.stringify(payload) }),
   importBitBrowserAccounts: (payload: { base_url: string; browser_ids: string[] }) => request<BitBrowserImportResponse>('/api/accounts/import/bitbrowser', { method: 'POST', body: JSON.stringify(payload) }),
+  ensureLocalBrowserLoginHelper: () => request<LocalBrowserLoginHelperStatus>('/api/accounts/local-browser-login/helper/ensure', { method: 'POST' }),
   localBrowserLoginStart: () => request<LocalBrowserLoginResponse>('/api/accounts/local-browser-login/start', { method: 'POST' }),
   localBrowserLoginStatus: (token: string) => request<LocalBrowserLoginResponse>(`/api/accounts/local-browser-login/status?token=${encodeURIComponent(token)}`),
   localBrowserLoginCancel: (token: string) => request<{ ok: boolean }>('/api/accounts/local-browser-login/cancel', { method: 'POST', body: JSON.stringify({ token }) }),

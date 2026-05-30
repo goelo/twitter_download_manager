@@ -12,6 +12,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -82,8 +84,13 @@ BROWSER_LOGIN_TIMEOUT_SECONDS = 300
 browser_login_lock = asyncio.Lock()
 browser_login_session = None
 LOCAL_BROWSER_LOGIN_TIMEOUT_SECONDS = 300
+LOCAL_LOGIN_HELPER_HOST = '127.0.0.1'
+LOCAL_LOGIN_HELPER_PORT = int(os.environ.get('TW_LOCAL_LOGIN_PORT', '18765') or 18765)
+LOCAL_LOGIN_HELPER_URL = f'http://{LOCAL_LOGIN_HELPER_HOST}:{LOCAL_LOGIN_HELPER_PORT}'
 local_browser_login_sessions = {}
 local_browser_login_lock = threading.Lock()
+local_login_helper_lock = threading.Lock()
+local_login_helper_process = None
 login_queue_lock = threading.Lock()
 login_queue_items = []
 login_queue_counter = 0
@@ -145,6 +152,64 @@ def local_chrome_executable():
         if candidate and Path(candidate).exists():
             return candidate
     return None
+
+
+def local_login_helper_health(timeout=1.0):
+    try:
+        request = urllib.request.Request(f'{LOCAL_LOGIN_HELPER_URL}/health', method='GET')
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status == 200
+    except Exception:
+        return False
+
+
+def start_local_login_helper_process():
+    if os.name != 'nt':
+        return False, '当前系统暂不支持自动启动本地登录助手，请手动启动 start_local_login_helper.bat。'
+    script = BASE_DIR / 'start_local_login_helper.bat'
+    if not script.exists():
+        return False, '未找到 start_local_login_helper.bat，请确认项目文件完整。'
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        process = subprocess.Popen(
+            ['cmd.exe', '/c', str(script)],
+            cwd=str(BASE_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            startupinfo=startupinfo,
+        )
+        return True, process
+    except Exception as exc:
+        return False, f'本地登录助手启动失败：{redact_sensitive(str(exc))}'
+
+
+def ensure_local_login_helper_running(wait_seconds=12):
+    global local_login_helper_process
+    if not browser_login_available():
+        raise HTTPException(status_code=403, detail='浏览器登录已被 TW_WEB_ENABLE_BROWSER_LOGIN=0 禁用。')
+    if local_login_helper_health():
+        return {'ok': True, 'status': 'ready', 'message': '本地 Chrome 登录助手已就绪。'}
+    with local_login_helper_lock:
+        if local_login_helper_health():
+            return {'ok': True, 'status': 'ready', 'message': '本地 Chrome 登录助手已就绪。'}
+        if local_login_helper_process and local_login_helper_process.poll() is None:
+            started = True
+        else:
+            started, result = start_local_login_helper_process()
+            if not started:
+                return {'ok': False, 'status': 'failed', 'message': result}
+            local_login_helper_process = result
+    deadline = time.time() + max(1, wait_seconds)
+    while time.time() < deadline:
+        if local_login_helper_health(timeout=0.75):
+            return {'ok': True, 'status': 'ready', 'message': '本地 Chrome 登录助手已自动启动。'}
+        time.sleep(0.5)
+    message = '本地 Chrome 登录助手正在启动，请稍后重试；如果一直失败，可手动运行 start_local_login_helper.bat。'
+    return {'ok': False, 'status': 'starting' if started else 'failed', 'message': message}
 
 
 def public_base_url(request: Request):
@@ -5631,6 +5696,11 @@ async def api_add_account_manual(request: Request, user=Depends(require_api_admi
         raise HTTPException(status_code=400, detail='auth_token 和 ct0 都必填')
     save_account(label, auth_token, ct0)
     return {'ok': True}
+
+
+@app.post('/api/accounts/local-browser-login/helper/ensure')
+def api_local_browser_login_helper_ensure(user=Depends(require_api_admin)):
+    return ensure_local_login_helper_running()
 
 
 @app.post('/api/accounts/local-browser-login/start')

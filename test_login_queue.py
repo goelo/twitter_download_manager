@@ -12,6 +12,8 @@ import web_app  # noqa: E402
 class LoginQueueTest(unittest.TestCase):
     def setUp(self):
         web_app.init_db()
+        web_app.BROWSER_LOGIN_DISABLED = False
+        web_app.local_login_helper_process = None
         with web_app.local_browser_login_lock:
             with web_app.login_queue_lock:
                 web_app.local_browser_login_sessions.clear()
@@ -130,6 +132,63 @@ class LoginQueueTest(unittest.TestCase):
 
         self.assertEqual(web_app.login_queue_items[0]['status'], 'expired')
         self.assertEqual(web_app.login_queue_items[1]['status'], 'running')
+
+    def test_ensure_local_login_helper_ready_does_not_start_process(self):
+        original_health = web_app.local_login_helper_health
+        original_start = web_app.start_local_login_helper_process
+        started = []
+        try:
+            web_app.local_login_helper_health = lambda timeout=1.0: True
+            web_app.start_local_login_helper_process = lambda: started.append(True)
+
+            result = web_app.ensure_local_login_helper_running(wait_seconds=1)
+
+            self.assertTrue(result['ok'])
+            self.assertEqual(result['status'], 'ready')
+            self.assertEqual(started, [])
+        finally:
+            web_app.local_login_helper_health = original_health
+            web_app.start_local_login_helper_process = original_start
+
+    def test_ensure_local_login_helper_starts_when_health_missing(self):
+        original_health = web_app.local_login_helper_health
+        original_start = web_app.start_local_login_helper_process
+
+        class FakeProcess:
+            def poll(self):
+                return None
+
+        calls = {'health': 0, 'start': 0}
+        try:
+            def fake_health(timeout=1.0):
+                calls['health'] += 1
+                return calls['health'] >= 3
+
+            def fake_start():
+                calls['start'] += 1
+                return True, FakeProcess()
+
+            web_app.local_login_helper_health = fake_health
+            web_app.start_local_login_helper_process = fake_start
+
+            result = web_app.ensure_local_login_helper_running(wait_seconds=2)
+
+            self.assertTrue(result['ok'])
+            self.assertEqual(result['status'], 'ready')
+            self.assertEqual(calls['start'], 1)
+        finally:
+            web_app.local_login_helper_health = original_health
+            web_app.start_local_login_helper_process = original_start
+
+    def test_ensure_local_login_helper_respects_disabled_flag(self):
+        original_disabled = web_app.BROWSER_LOGIN_DISABLED
+        try:
+            web_app.BROWSER_LOGIN_DISABLED = True
+            with self.assertRaises(web_app.HTTPException) as ctx:
+                web_app.ensure_local_login_helper_running(wait_seconds=1)
+            self.assertEqual(ctx.exception.status_code, 403)
+        finally:
+            web_app.BROWSER_LOGIN_DISABLED = original_disabled
 
 
 if __name__ == '__main__':
