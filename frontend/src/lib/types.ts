@@ -18,6 +18,14 @@ export type AccountCapacity = {
   next_available_at: string | null;
   rate_limited_24h: number;
   failure_24h: number;
+  adaptive_policy?: {
+    enabled: boolean;
+    risk_level: 'healthy' | 'watch' | 'risky' | 'cooldown' | 'expired' | string;
+    allowed_task_types: string[];
+    max_tweet_limit: number | null;
+    min_interval_seconds: number;
+    recommended_action: string;
+  };
 };
 
 export type Account = {
@@ -52,6 +60,19 @@ export type ProxyItem = {
   cooldown_until: string | null;
   created_at: string;
 };
+
+export type TrackedBlogger = {
+  id: number;
+  screen_name: string;
+  display_name: string | null;
+  default_tweet_limit: number;
+  last_used_at: string | null;
+  use_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TargetLimitMap = Record<string, number>;
 
 export type Task = {
   id: number;
@@ -483,4 +504,5 @@ export type TaskFormValues = {
   min_faves: number;
   min_retweets: number;
   search_advanced: string;
+  target_limits: TargetLimitMap;
 };

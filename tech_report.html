@@ -1,0 +1,776 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>X/Twitter 采集工作台技术架构说明</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #040a12;
+      --panel: rgba(10, 20, 34, 0.9);
+      --panel-2: rgba(15, 30, 50, 0.92);
+      --line: rgba(148, 163, 184, 0.28);
+      --line-strong: rgba(96, 165, 250, 0.62);
+      --text: #edf6ff;
+      --muted: #a9b8ca;
+      --muted-2: #7f8da0;
+      --blue: #3b82f6;
+      --cyan: #38bdf8;
+      --orange: #f97316;
+      --green: #22c55e;
+      --red: #f87171;
+      --yellow: #facc15;
+      --violet: #a78bfa;
+      --shadow: 0 24px 70px rgba(0, 0, 0, 0.38);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 14% 8%, rgba(59, 130, 246, 0.18), transparent 28%),
+        radial-gradient(circle at 88% 12%, rgba(249, 115, 22, 0.12), transparent 30%),
+        linear-gradient(rgba(96, 165, 250, 0.07) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(96, 165, 250, 0.07) 1px, transparent 1px),
+        linear-gradient(145deg, #040a12 0%, #07111f 48%, #020617 100%);
+      background-size: 100% 100%, 100% 100%, 42px 42px, 42px 42px, 100% 100%;
+      color: var(--text);
+      font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      line-height: 1.5;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background: linear-gradient(90deg, transparent, rgba(56, 189, 248, 0.07), transparent);
+      transform: translateX(-42%);
+      animation: scan 9s linear infinite;
+      z-index: 0;
+    }
+
+    button { font: inherit; }
+    .deck { position: relative; width: 100vw; height: 100vh; isolation: isolate; }
+    .slides {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      transition: transform 620ms cubic-bezier(0.2, 0.9, 0.2, 1);
+      will-change: transform;
+    }
+
+    .slide {
+      position: relative;
+      flex: 0 0 100vh;
+      width: 100vw;
+      min-height: 100vh;
+      padding: clamp(22px, 3.8vw, 56px);
+      display: grid;
+      place-items: center;
+    }
+
+    .stage {
+      width: min(1260px, 100%);
+      min-height: min(710px, calc(100vh - 110px));
+      display: grid;
+      align-content: center;
+      gap: 18px;
+    }
+
+    .slide-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(260px, 0.75fr);
+      align-items: end;
+      gap: 24px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 15px;
+    }
+
+    h1, h2, h3, p { margin: 0; }
+    h1 { max-width: 980px; font-size: clamp(42px, 6vw, 78px); line-height: 1.02; font-weight: 820; letter-spacing: 0; }
+    h2 { font-size: clamp(28px, 3.3vw, 46px); line-height: 1.1; font-weight: 780; letter-spacing: 0; }
+    h3 { font-size: clamp(18px, 1.7vw, 23px); line-height: 1.25; font-weight: 720; letter-spacing: 0; }
+    .lead { max-width: 900px; color: var(--muted); font-size: clamp(16px, 1.55vw, 22px); }
+    .eyebrow { margin: 0 0 8px; color: var(--cyan); font-family: Consolas, "Fira Code", monospace; font-size: 13px; text-transform: uppercase; }
+    .mono { font-family: Consolas, "Fira Code", monospace; }
+
+    .grid-2, .grid-3, .grid-4 { display: grid; gap: 15px; }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+    .panel {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      padding: clamp(16px, 1.8vw, 23px);
+    }
+    .panel::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      border-top: 1px solid rgba(56, 189, 248, 0.32);
+    }
+    .panel p, .panel li { color: var(--muted); }
+
+    .tagline, .inline-list { display: flex; flex-wrap: wrap; gap: 9px; }
+    .pill, .badge {
+      display: inline-flex;
+      min-height: 32px;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(8, 18, 31, 0.78);
+      padding: 6px 10px;
+      color: #dcecff;
+      font-size: 14px;
+      white-space: nowrap;
+    }
+    .pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 14px rgba(59, 130, 246, 0.78); }
+    .badge { min-height: 27px; padding: 4px 8px; font-family: Consolas, "Fira Code", monospace; color: #bfdbfe; background: rgba(59, 130, 246, 0.12); border-color: rgba(96, 165, 250, 0.42); }
+    .badge.plan { color: #fed7aa; background: rgba(249, 115, 22, 0.12); border-color: rgba(249, 115, 22, 0.46); }
+    .badge.ok { color: #bbf7d0; background: rgba(34, 197, 94, 0.12); border-color: rgba(34, 197, 94, 0.46); }
+    .badge.warn { color: #fde68a; background: rgba(250, 204, 21, 0.12); border-color: rgba(250, 204, 21, 0.46); }
+
+    .metric strong { display: block; color: var(--text); font-size: clamp(28px, 3.4vw, 44px); line-height: 1; }
+    .metric span { color: var(--muted); font-size: 14px; }
+    .list { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
+    .list li { position: relative; border-left: 3px solid var(--blue); border-radius: 0 8px 8px 0; background: rgba(8, 18, 31, 0.62); padding: 9px 12px 9px 14px; }
+    .list li:nth-child(2n) { border-left-color: var(--orange); }
+    .list li:nth-child(3n) { border-left-color: var(--green); }
+
+    .matrix { display: grid; grid-template-columns: 0.9fr 1.1fr 1.1fr 1.1fr; gap: 8px; }
+    .matrix .cell {
+      min-height: 82px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-2);
+      padding: 10px;
+      font-size: 13px;
+    }
+    .matrix .head { color: var(--cyan); font-family: Consolas, "Fira Code", monospace; min-height: 42px; }
+    .matrix strong { display: block; margin-bottom: 4px; }
+
+    .architecture {
+      position: relative;
+      min-height: 470px;
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .arch-lane {
+      position: relative;
+      min-height: 450px;
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      border-radius: 8px;
+      background: rgba(8, 16, 29, 0.62);
+      padding: 12px;
+      display: grid;
+      align-content: start;
+      gap: 10px;
+    }
+    .lane-title { color: var(--cyan); font-family: Consolas, "Fira Code", monospace; font-size: 12px; }
+    .arch-node {
+      min-height: 78px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-2);
+      padding: 11px;
+      animation: stateGlow 8s linear infinite;
+      animation-delay: calc(var(--i) * 0.5s);
+    }
+    .arch-node span, .flow-node span, .state-node span, .pipeline-step span { display: block; color: var(--muted); font-size: 13px; }
+    .arch-bus {
+      position: absolute;
+      left: 5%;
+      right: 5%;
+      top: 54%;
+      height: 2px;
+      background: linear-gradient(90deg, rgba(59, 130, 246, 0.2), var(--cyan), var(--orange), rgba(34, 197, 94, 0.28));
+      box-shadow: 0 0 16px rgba(56, 189, 248, 0.56);
+      pointer-events: none;
+    }
+    .packet {
+      position: absolute;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--cyan);
+      box-shadow: 0 0 18px rgba(56, 189, 248, 0.9);
+      pointer-events: none;
+      animation: packetMove 6s linear infinite;
+    }
+    .packet.p2 { background: var(--orange); animation-delay: -1.8s; box-shadow: 0 0 18px rgba(249, 115, 22, 0.9); }
+    .packet.p3 { background: var(--green); animation-delay: -3.6s; box-shadow: 0 0 18px rgba(34, 197, 94, 0.9); }
+
+    .workflow { position: relative; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 11px; }
+    .flow-node {
+      position: relative;
+      min-height: 142px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-2);
+      padding: 13px;
+    }
+    .flow-node::before {
+      content: attr(data-step);
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      margin-bottom: 9px;
+      border-radius: 8px;
+      color: #bfdbfe;
+      background: rgba(59, 130, 246, 0.18);
+      font-family: Consolas, "Fira Code", monospace;
+      font-weight: 700;
+    }
+    .flow-node:not(:last-child)::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      right: -12px;
+      width: 13px;
+      height: 2px;
+      background: linear-gradient(90deg, var(--blue), var(--orange));
+      box-shadow: 0 0 12px rgba(59, 130, 246, 0.82);
+      animation: linePulse 1.4s linear infinite;
+    }
+    .flow-token {
+      position: absolute;
+      top: calc(50% - 5px);
+      left: 1%;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--cyan);
+      box-shadow: 0 0 18px rgba(56, 189, 248, 0.85);
+      animation: workflowToken 6.5s linear infinite;
+    }
+
+    .state-machine { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+    .state-node {
+      min-height: 136px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-2);
+      padding: 14px;
+      animation: stateGlow 7.5s linear infinite;
+      animation-delay: calc(var(--i) * 1s);
+    }
+    .state-node.warn { border-color: rgba(250, 204, 21, 0.38); }
+    .state-node.err { border-color: rgba(248, 113, 113, 0.4); }
+
+    .db-schema { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; }
+    .table-card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); overflow: hidden; }
+    .table-card h3 { padding: 13px 14px; background: rgba(59, 130, 246, 0.12); font-family: Consolas, "Fira Code", monospace; font-size: 18px; }
+    .table-card ul { display: grid; gap: 8px; margin: 0; padding: 13px 15px 15px; color: var(--muted); list-style: none; font-family: Consolas, "Fira Code", monospace; font-size: 13px; }
+    .table-card li::before { content: "field"; margin-right: 7px; color: var(--muted-2); font-size: 11px; }
+
+    .dispatch { display: grid; grid-template-columns: 1fr 1.35fr; gap: 16px; }
+    .route-row { display: grid; grid-template-columns: 150px 1fr; gap: 12px; align-items: center; margin-bottom: 10px; }
+    .route-key, .route-target { border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); padding: 11px; min-height: 50px; font-family: Consolas, "Fira Code", monospace; font-size: 13px; }
+    .route-key { color: #bfdbfe; }
+    .route-target { color: var(--muted); }
+
+    .pipeline { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; }
+    .pipeline-step {
+      position: relative;
+      min-height: 128px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-2);
+      padding: 12px;
+      animation: stateGlow 8s linear infinite;
+      animation-delay: calc(var(--i) * 0.75s);
+    }
+    .pipeline-step:not(:last-child)::after { content: ""; position: absolute; top: 50%; right: -10px; width: 10px; height: 2px; background: var(--orange); }
+
+    .risk-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .risk-card { min-height: 148px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); padding: 15px; }
+    .risk-meter { height: 9px; margin-top: 12px; border-radius: 999px; overflow: hidden; background: rgba(148, 163, 184, 0.18); }
+    .risk-meter span { display: block; width: var(--w); height: 100%; background: linear-gradient(90deg, var(--green), var(--yellow), var(--orange)); animation: barBreath 3s ease-in-out infinite; }
+
+    .mini-bars { display: grid; gap: 9px; margin-top: 12px; }
+    .mini-bar { height: 10px; border-radius: 999px; background: rgba(148, 163, 184, 0.18); overflow: hidden; }
+    .mini-bar span { display: block; height: 100%; width: var(--w); background: linear-gradient(90deg, var(--blue), var(--cyan), var(--orange)); animation: barBreath 3.2s ease-in-out infinite; }
+
+    .controls { position: fixed; z-index: 20; right: 22px; bottom: 22px; display: flex; align-items: center; gap: 10px; }
+    .control-btn { min-width: 44px; min-height: 44px; border: 1px solid var(--line); border-radius: 8px; background: rgba(8, 18, 31, 0.9); color: var(--text); cursor: pointer; }
+    .control-btn:hover, .control-btn:focus-visible { border-color: var(--cyan); background: rgba(20, 43, 69, 0.96); outline: none; transform: translateY(-1px); }
+    .control-btn:disabled { cursor: not-allowed; opacity: 0.45; transform: none; }
+    .counter { min-width: 86px; border: 1px solid var(--line); border-radius: 8px; background: rgba(8, 18, 31, 0.9); padding: 10px 12px; color: var(--muted); font-family: Consolas, "Fira Code", monospace; text-align: center; }
+    .progress { position: fixed; z-index: 20; left: 0; right: 0; top: 0; height: 4px; background: rgba(148, 163, 184, 0.16); }
+    .progress span { display: block; height: 100%; width: 5%; background: linear-gradient(90deg, var(--blue), var(--cyan), var(--orange)); box-shadow: 0 0 18px rgba(56, 189, 248, 0.78); transition: width 420ms ease; }
+    .hint { position: fixed; z-index: 20; left: 22px; bottom: 26px; color: var(--muted); font-size: 13px; }
+    .accent { color: var(--orange); }
+    .ok { color: var(--green); }
+    .warn { color: var(--red); }
+
+    @keyframes scan { from { transform: translateX(-45%); } to { transform: translateX(45%); } }
+    @keyframes packetMove {
+      0% { left: 5%; top: 54%; opacity: 0; }
+      8% { opacity: 1; }
+      25% { left: 28%; top: 54%; }
+      50% { left: 52%; top: 54%; }
+      75% { left: 74%; top: 54%; }
+      92% { opacity: 1; }
+      100% { left: 94%; top: 54%; opacity: 0; }
+    }
+    @keyframes workflowToken { 0% { left: 1%; opacity: 0; } 8% { opacity: 1; } 92% { opacity: 1; } 100% { left: 98%; opacity: 0; } }
+    @keyframes linePulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+    @keyframes stateGlow {
+      0%, 100% { border-color: var(--line); box-shadow: none; }
+      11%, 22% { border-color: var(--cyan); box-shadow: 0 0 26px rgba(56, 189, 248, 0.24), inset 0 0 24px rgba(56, 189, 248, 0.12); }
+    }
+    @keyframes barBreath { 0%, 100% { transform: translateX(-5%); filter: brightness(0.92); } 50% { transform: translateX(5%); filter: brightness(1.15); } }
+
+    @media (max-width: 1100px) {
+      body { overflow: auto; }
+      .deck, .slide { min-height: 100vh; }
+      .stage { min-height: auto; }
+      .slide-header, .grid-2, .grid-3, .grid-4, .matrix, .architecture, .workflow, .state-machine, .db-schema, .dispatch, .pipeline, .risk-grid { grid-template-columns: 1fr; }
+      .arch-lane { min-height: auto; }
+      .arch-bus, .packet, .flow-token, .flow-node::after, .pipeline-step::after { display: none; }
+      .hint { display: none; }
+    }
+    @media (max-width: 640px) {
+      .slide { padding: 22px 16px 132px; }
+      .controls { display: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="deck" aria-live="polite">
+    <div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
+    <main class="slides" id="slides">
+      <section class="slide" aria-label="封面">
+        <div class="stage">
+          <div>
+            <p class="eyebrow">Technical Architecture Review / 20 min</p>
+            <h1>X/Twitter 采集工作台：从脚本到工程化采集平台</h1>
+          </div>
+          <p class="lead">围绕控制面、状态层、调度层、执行层、资源治理和结果归档，说明采集脚本工程化后的系统边界。</p>
+          <div class="tagline">
+            <span class="pill">React 控制面</span>
+            <span class="pill">FastAPI API 层</span>
+            <span class="pill">SQLite 状态中心</span>
+            <span class="pill">Worker + Runner</span>
+            <span class="pill">账号/代理资源池</span>
+          </div>
+          <div class="grid-4">
+            <div class="panel metric"><strong>20</strong><span>分钟技术说明，按问题、设计、权衡、优化展开</span></div>
+            <div class="panel metric"><strong>7</strong><span>核心分层：UI / API / DB / Queue / Runner / Scripts / Artifacts</span></div>
+            <div class="panel metric"><strong>4</strong><span>状态表：users / accounts / proxies / tasks</span></div>
+            <div class="panel metric"><strong>0</strong><span>展示页外部依赖，离线打开即可讲</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" aria-label="项目定位">
+        <div class="stage">
+          <div class="slide-header">
+            <div><p class="eyebrow">01 / Positioning</p><h2>项目定位：采集控制面</h2></div>
+            <p class="lead">统一管理目标配置、账号代理、任务调度、运行日志和结果文件，把采集动作纳入可追踪流程。</p>
+          </div>
+          <div class="grid-3">
+            <div class="panel"><h3>脚本能力沉淀</h3><p>保留用户媒体、搜索、评论、主页资料、账号近况等采集能力，避免重写核心逻辑造成风险。</p></div>
+            <div class="panel"><h3>控制面补齐</h3><p>React + FastAPI 把账号、代理、任务、日志、文件和摘要放到统一入口。</p></div>
+            <div class="panel"><h3>平台化承接复杂度</h3><p>SQLite 持久化状态，worker 调度任务，runner 子进程隔离执行，结果目录可打包复盘。</p></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" aria-label="业务问题">
+        <div class="stage">
+          <div class="slide-header">
+            <div><p class="eyebrow">02 / Problem Space</p><h2>平台化问题域：账号、代理、任务与结果</h2></div>
+            <p class="lead">采集链路受账号会话、网络出口、接口变化、目标权限、时间窗口和媒体下载共同影响。</p>
+          </div>
+          <div class="risk-grid">
+            <div class="risk-card"><h3>账号会话</h3><p>Cookie 会过期，X 的校验接口也可能误报。账号状态按可用、待确认、失效分层记录。</p><div class="risk-meter"><span style="--w:82%"></span></div></div>
+            <div class="risk-card"><h3>网络出口</h3><p>代理可用性、地理位置、连接稳定性直接影响采集成功率。</p><div class="risk-meter"><span style="--w:74%"></span></div></div>
+            <div class="risk-card"><h3>接口变化</h3><p>GraphQL 字段和内部接口可能变化，失败分类用于快速定位。</p><div class="risk-meter"><span style="--w:68%"></span></div></div>
+            <div class="risk-card"><h3>任务复盘</h3><p>没有日志、配置快照和结果摘要，就很难解释 0 结果或部分失败。</p><div class="risk-meter"><span style="--w:86%"></span></div></div>
+            <div class="risk-card"><h3>并发与限流</h3><p>并发策略结合账号状态、代理质量和接口限流统一控制。</p><div class="risk-meter"><span style="--w:72%"></span></div></div>
+            <div class="risk-card"><h3>合规边界</h3><p>Cookie、版权、隐私、平台规则在系统层明确提示和脱敏。</p><div class="risk-meter"><span style="--w:90%"></span></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" aria-label="技术栈选择">
+        <div class="stage">
+          <div class="slide-header">
+            <div><p class="eyebrow">03 / Stack Decision Matrix</p><h2>技术栈选择：服务于快速交付与稳定边界</h2></div>
+            <p class="lead">选型围绕单机部署、快速交付、低运维成本、脚本复用和后续可替换性展开。</p>
+          </div>
+          <div class="matrix">
+            <div class="cell head">技术</div><div class="cell head">选型依据</div><div class="cell head">直接收益</div><div class="cell head">后续替换点</div>
+            <div class="cell"><strong>React + TanStack Query</strong>前端控制面</div><div class="cell">任务、账号、代理、日志存在高频刷新和状态同步。</div><div class="cell">组件化、缓存刷新、表单模板和列表状态更易管理。</div><div class="cell">复杂工作流可升级为状态机或低代码配置。</div>
+            <div class="cell"><strong>FastAPI</strong>API 控制层</div><div class="cell">Python 生态内聚，直接复用采集脚本和 httpx/Playwright。</div><div class="cell">API、权限、健康检查、静态资源托管都能快速落地。</div><div class="cell">高并发场景可拆 API Gateway + Worker 服务。</div>
+            <div class="cell"><strong>SQLite</strong>状态中心</div><div class="cell">当前是单机部署，任务规模无需外部数据库。</div><div class="cell">零运维、数据持久、事务足够、备份简单。</div><div class="cell">多实例调度时迁移 PostgreSQL / MySQL。</div>
+            <div class="cell"><strong>Docker</strong>交付层</div><div class="cell">线上环境强调可复现、可回滚和依赖一致性。</div><div class="cell">Node 构建 + Python 运行 + Chromium 依赖统一封装。</div><div class="cell">未来可拆镜像、接入 CI/CD。</div>
+            <div class="cell"><strong>Playwright / Local Helper</strong>授权链路</div><div class="cell">浏览器安全模型限制线上页面读取本机 X Cookie。</div><div class="cell">本地 Chrome 完成授权，只回传 auth_token/ct0。</div><div class="cell">规模化可接指纹浏览器 Profile 池。</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" aria-label="系统全景架构">
+        <div class="stage">
+          <div class="slide-header">
+            <div><p class="eyebrow">04 / System Architecture</p><h2>系统架构：控制、调度、执行与产物分层</h2></div>
+            <p class="lead">用分层边界隔离页面交互、任务状态、脚本执行和结果归档，降低单点故障对主流程的影响。</p>
+          </div>
+          <div class="architecture panel">
+            <div class="arch-bus"></div><span class="packet"></span><span class="packet p2"></span><span class="packet p3"></span>
+            <div class="arch-lane"><div class="lane-title">UI</div><div class="arch-node" style="--i:0"><strong>控制台</strong><span>任务、账号、代理、日志、文件</span></div><div class="arch-node" style="--i:1"><strong>预设目录</strong><span>常用采集参数模板</span></div></div>
+            <div class="arch-lane"><div class="lane-title">API</div><div class="arch-node" style="--i:2"><strong>FastAPI</strong><span>权限、参数校验、任务 API</span></div><div class="arch-node" style="--i:3"><strong>凭证保护</strong><span>Cookie / token / proxy 脱敏</span></div></div>
+            <div class="arch-lane"><div class="lane-title">STATE</div><div class="arch-node" style="--i:4"><strong>SQLite</strong><span>users / accounts / proxies / tasks</span></div><div class="arch-node" style="--i:5"><strong>健康状态</strong><span>账号与代理检测结果</span></div></div>
+            <div class="arch-lane"><div class="lane-title">QUEUE</div><div class="arch-node" style="--i:6"><strong>Scheduler</strong><span>轮询 queued，顺序执行</span></div><div class="arch-node" style="--i:7"><strong>Retry</strong><span>网络/限流退避重试</span></div></div>
+            <div class="arch-lane"><div class="lane-title">RUNNER</div><div class="arch-node" style="--i:8"><strong>Runner</strong><span>按 task_type 分发</span></div><div class="arch-node" style="--i:9"><strong>Subprocess</strong><span>隔离脚本故障</span></div></div>
+            <div class="arch-lane"><div class="lane-title">COLLECT</div><div class="arch-node" style="--i:10"><strong>采集适配</strong><span>media / search / replies / profile</span></div><div class="arch-node" style="--i:11"><strong>httpx</strong><span>GraphQL 请求与媒体下载</span></div></div>
+            <div class="arch-lane"><div class="lane-title">OUTPUT</div><div class="arch-node" style="--i:12"><strong>Artifacts</strong><span>CSV / Markdown / media</span></div><div class="arch-node" style="--i:13"><strong>Report</strong><span>摘要、日志与交付包</span></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" aria-label="任务运行链路">
+        <div class="stage">
+          <div class="slide-header">
+            <div><p class="eyebrow">05 / Runtime Flow</p><h2>任务如何跑起来：从表单到结果归档</h2></div>
+            <p class="lead">任务配置、账号会话、运行日志、进程状态和输出目录共同形成可追踪执行链路。</p>
+          </div>
+          <div class="workflow">
+            <span class="flow-token" aria-hidden="true"></span>
+            <div class="flow-node" data-step="01"><strong>创建任务</strong><span>目标、条数、内容类型、账号、代理、时间范围。</span></div>
+            <div class="flow-node" data-step="02"><strong>规范化</strong><span>URL 转用户名，校验推文链接误填、时间范围和账号状态。</span></div>
+            <div class="flow-node" data-step="03"><strong>入库</strong><span>tasks.status = queued，生成 output_dir / log_path。</span></div>
+            <div class="flow-node" data-step="04"><strong>调度</strong><span>worker_loop 按创建顺序拉取任务。</span></div>
+            <div class="flow-node" data-step="05"><strong>隔离执行</strong><span>写 task_config 和 account_session，启动子进程。</span></div>
+            <div class="flow-node" data-step="06"><strong>分发</strong><span>web_runner 根据 task_type 调用对应脚本。</span></div>
+            <div class="flow-node" data-step="07"><strong>归档</strong><span>CSV、媒体、日志、summary_report 写入任务目录。</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" aria-label="账号授权链路">
+        <div class="stage">
+          <div class="slide-header">
+            <div><p class="eyebrow">06 / Account Session Flow</p><h2>账号授权链路：本地 Chrome helper</h2></div>
+            <p class="lead">线上页面受浏览器安全模型限制，授权窗口和 Cookie 提取由本地 helper 完成。</p>
+          </div>
+          <div class="workflow">
+            <span class="flow-token" aria-hidden="true"></span>
+            <div class="flow-node" data-step="01"><strong>申请 token</strong><span>后端生成 5 分钟一次性登录 token。</span></div>
+            <div class="flow-node" data-step="02"><strong>调用本地</strong><span>前端请求 127.0.0.1:18765/start。</span></div>
+            <div class="flow-node" data-step="03"><strong>Chrome 登录</strong><span>helper 弹出临时 Profile，让用户完成 X 登录。</span></div>
+            <div class="flow-node" data-step="04"><strong>提取 Cookie</strong><span>只读取 auth_token 和 ct0，不回传明文密码。</span></div>
+            <div class="flow-node" data-step="05"><strong>回传后端</strong><span>token 校验通过后保存账号。</span></div>
+            <div class="flow-node" data-step="06"><strong>健康状态</strong><span>检测失败分 active / unknown / check_failed / expired。</span></div>
+            <div class="flow-node" data-step="07"><strong>Runner 注入</strong><span>任务执行时写入 account_session.json。</span></div>
+          </div>
+          <div class="grid-3">
+            <div class="panel"><h3>安全收益</h3><p>不保存账号密码，不在日志中展示 Cookie，页面复制信息时自动脱敏。</p></div>
+            <div class="panel"><h3>稳定收益</h3><p>旧校验接口 404 不再直接误杀账号，降低新号误判。</p></div>
+            <div class="panel"><h3>扩展方向</h3><p>BitBrowser / Profile 池可以接入同一账号资源模型。</p></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" aria-label="SQLite 状态中心">
+        <div class="stage">
+          <div class="slide-header">
+            <div><p class="eyebrow">07 / SQLite State Center</p><h2>SQLite 状态中心</h2></div>
+            <p class="lead">单机部署阶段，SQLite 负责用户、账号、代理和任务状态落盘，减少外部数据库运维成本。</p>
+          </div>
+          <div class="db-schema">
+            <div class="table-card"><h3>users</h3><ul><li>id</li><li>username</li><li>password_hash</li><li>role</li></ul></div>
+            <div class="table-card"><h3>accounts</h3><ul><li>auth_token</li><li>ct0</li><li>status</li><li>last_error</li></ul></div>
+            <div class="table-card"><h3>proxies</h3><ul><li>proxy</li><li>enabled</li><li>detected_ip</li><li>failure_count</li></ul></div>
+            <div class="table-card"><h3>tasks</h3><ul><li>config_json</li><li>status</li><li>output_dir</li><li>retry_count</li></ul></div>
+          </div>
+          <div class="grid-3">
+            <div class="panel"><h3>Redis 替换点</h3><p>多 worker 高吞吐队列出现后，再引入独立队列组件。</p></div>
+            <div class="panel"><h3>MySQL 替换点</h3><p>团队权限、审计查询和多实例写入复杂后，再接入外部数据库。</p></div>
+            <div class="panel"><h3>迁移边界</h3><p>多实例、并发调度、审计查询变复杂时，再升级 PostgreSQL / MySQL。</p></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" aria-label="Worker 调度模型">
+        <div class="stage">
+          <div class="slide-header">
+            <div><p class="eyebrow">08 / Worker Scheduling</p><h2>Worker 调度模型：queued 状态驱动</h2></div>
+            <p class="lead">任务进入 queued，后台线程拉取，子进程执行。这个模型适合单机可靠交付，也保留了未来替换为消息队列的空间。</p>
+          </div>
+          <div class="state-machine">
+            <div class="state-node" style="--i:0"><strong>queued</strong><span>等待 worker 拉取，支持删除和取消。</span></div>
+            <div class="state-node" style="--i:1"><strong>running</strong><span>记录 started_at 和 process_id。</span></div>
+            <div class="state-node" style="--i:2"><strong>completed</strong><span>退出码 0，写 summary_report。</span></div>
+            <div class="state-node warn" style="--i:3"><strong>partial_failed</strong><span>失败但已有部分结果，保留产物。</span></div>
+            <div class="state-node err" style="--i:4"><strong>failed</strong><span>分类失败原因：网络、限流、接口、目标。</span></div>
+            <div class="state-node warn" style="--i:5"><strong>retry</strong><span>网络/限流可自动重试，避免一次抖动定生死。</span></div>
+          </div>
+          <div class="grid-3">
+            <div class="panel"><h3>当前收益</h3><p>实现成本低，状态可查，任务不会因为页面刷新而丢失。</p></div>
+            <div class="panel"><h3>当前瓶颈</h3><p>单 worker 顺序执行，吞吐上限受单机和账号/代理限制。</p></div>
+            <div class="panel"><h3>演进方向</h3><p>抽象 TaskQueue 接口，后续替换 Celery/RQ/Redis Stream。</p></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" aria-label="Runner 分发层">
+        <div class="stage">
+          <div class="slide-header">
+            <div><p class="eyebrow">09 / Runner Dispatch Layer</p><h2>Runner 分发层：保留脚本资产，统一任务入口</h2></div>
+            <p class="lead">runner 是 Web 平台与历史采集脚本之间的适配层。它把配置、账号和输出路径统一，再按 task_type 调用不同能力。</p>
+          </div>
+          <div class="dispatch">
+            <div class="panel">
+              <h3>统一执行协议</h3>
+              <pre class="mono">python web_runner.py \
+  --config task_config.json \
+  --account account_session.json \
+  --output /data/tasks/...</pre>
+              <p style="margin-top: 14px;">Web 服务只负责生成快照和启动进程，脚本内部变化不会污染控制面。</p>
+            </div>
+            <div class="panel">
+              <div class="route-row"><div class="route-key">benchmark_account</div><div class="route-target">benchmark_down.py：账号近况、最近 N 条、文本/媒体/互动</div></div>
+              <div class="route-row"><div class="route-key">user_media</div><div class="route-target">main.py：用户媒体、转推、likes、highlights</div></div>
+              <div class="route-row"><div class="route-key">search</div><div class="route-target">tag_down.py：关键词、Tag、高级搜索</div></div>
+              <div class="route-row"><div class="route-key">replies</div><div class="route-target">reply_down.py：评论区和链接采样</div></div>
+              <div class="route-row"><div class="route-key">profile</div><div class="route-target">profile_down.py：头像、banner、简介归档</div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" aria-label="采集任务类型">
+        <div class="stage">
+          <div class="slide-header">
+            <div><p class="eyebrow">10 / Task Portfolio</p><h2>采集任务类型：默认从账号近况开始</h2></div>
+            <p class="lead">默认入口面向快速采样：输入账号主页，设置采集条数，选择文本、图片和视频范围。</p>
+          </div>
+          <div class="grid-3">
+            <div class="panel"><h3>账号近况</h3><p>面向快速采样，输入主页 URL，输出最近 N 条推文、媒体和互动指标。</p><span class="badge ok">默认入口</span></div>
+            <div class="panel"><h3>用户媒体</h3><p>面向素材归档，支持转推、likes、highlights、Markdown 和媒体下载。</p></div>
+            <div class="panel"><h3>搜索 / Tag</h3><p>面向热点舆情，按关键词、高级语法和最新/媒体模式采集。</p></div>
+            <div class="panel"><h3>评论区</h3><p>面向互动分析，输入推文链接或目标，采评论内容和媒体。</p></div>
+            <div class="panel"><h3>主页资料</h3><p>只抓头像、banner 和简介，不产出推文 CSV，避免 0 记录误解。</p></div>
+            <div class="panel"><h3>运行控制</h3><p>保留传统脚本参数入口，适合熟悉旧配置的高级用户。</p></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" aria-label="失败分类与重试">
+        <div class="stage">
+          <div class="slide-header">
+            <div><p class="eyebrow">11 / Failure Taxonomy</p><h2>失败治理模型：分类、重试、保留产物</h2></div>
+            <p class="lead">失败按账号、网络、限流、目标、接口变化和部分产出分类，分别决定重试、提示或代码修复。</p>
+          </div>
+          <div class="risk-grid">
+            <div class="risk-card"><h3>auth_expired</h3><p>Cookie 缺失、401/403，提示重新登录或更新账号。</p><div class="risk-meter"><span style="--w:86%"></span></div></div>
+            <div class="risk-card"><h3>network_failed</h3><p>连接超时、代理异常，可重试，可换出口。</p><div class="risk-meter"><span style="--w:72%"></span></div></div>
+            <div class="risk-card"><h3>rate_limited</h3><p>接口限流，进入冷却、退避和并发控制。</p><div class="risk-meter"><span style="--w:78%"></span></div></div>
+            <div class="risk-card"><h3>target_unavailable</h3><p>目标不存在、不可见、权限不足，不应盲目重试。</p><div class="risk-meter"><span style="--w:58%"></span></div></div>
+            <div class="risk-card"><h3>api_changed</h3><p>字段结构变化，进入代码修复流程。</p><div class="risk-meter"><span style="--w:65%"></span></div></div>
+            <div class="risk-card"><h3>partial_failed</h3><p>已有部分产出时保留结果，不让一次异常抹掉有效数据。</p><div class="risk-meter"><span style="--w:70%"></span></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" aria-label="资源治理模型">
+        <div class="stage">
+          <div class="slide-header">
+            <div><p class="eyebrow">12 / Resource Governance</p><h2>账号池与代理池：采集系统的资源治理模型</h2></div>
+            <p class="lead">账号和代理作为运行资源管理，记录健康状态、失败原因、检测时间和可用性边界。</p>
+          </div>
+          <div class="grid-2">
+            <div class="panel">
+              <h3>账号池</h3>
+              <ul class="list">
+                <li>状态从 active / unknown / check_failed / expired 分层，避免校验接口 404 误杀账号。</li>
+                <li>本地 Chrome 登录只保存 auth_token/ct0，日志和复制信息全部脱敏。</li>
+                <li>BitBrowser 导入适合已登录 Profile，后续可扩展为 Profile 池。</li>
+              </ul>
+            </div>
+            <div class="panel">
+              <h3>代理池</h3>
+              <ul class="list">
+                <li>支持 http、socks、host:port:user:pass，统一规范化成 httpx 可用格式。</li>
+                <li>检测出口 IP，记录 detected_ip、failure_count、last_error。</li>
+                <li>未来可做质量评分、区域标签、冷却时间和自动熔断。</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" aria-label="结果产物">
+        <div class="stage">
+          <div class="slide-header">
+            <div><p class="eyebrow">13 / Data Artifacts</p><h2>结果产物：结构化归档与二次分析入口</h2></div>
+            <p class="lead">配置快照、运行日志、结构化 CSV、媒体文件和交付包共同构成可追溯的数据资产。</p>
+          </div>
+          <div class="pipeline">
+            <div class="pipeline-step" style="--i:0"><strong>task_config</strong><span>任务参数快照</span></div>
+            <div class="pipeline-step" style="--i:1"><strong>account_session</strong><span>运行会话快照，打包时排除</span></div>
+            <div class="pipeline-step" style="--i:2"><strong>task.log</strong><span>运行过程与错误线索</span></div>
+            <div class="pipeline-step" style="--i:3"><strong>CSV</strong><span>推文、媒体、互动字段</span></div>
+            <div class="pipeline-step" style="--i:4"><strong>Media</strong><span>图片、视频文件</span></div>
+            <div class="pipeline-step" style="--i:5"><strong>summary_report</strong><span>摘要、统计与 Top 链接</span></div>
+            <div class="pipeline-step" style="--i:6"><strong>Zip</strong><span>一键打包交付</span></div>
+          </div>
+          <div class="grid-3">
+            <div class="panel"><h3>可交付</h3><p>记录数、媒体数、互动合计和 Top 链接形成结构化输出。</p></div>
+            <div class="panel"><h3>可追溯</h3><p>配置和日志能解释失败原因、结果数量和限流情况。</p></div>
+            <div class="panel"><h3>可扩展</h3><p>CSV 是后续 ETL、Embedding、聚类、Top-K 的输入。</p></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" aria-label="性能优化路线">
+        <div class="stage">
+          <div class="slide-header">
+            <div><p class="eyebrow">14 / Performance Roadmap</p><h2>性能优化路线：背压、冷却与分池</h2></div>
+            <p class="lead">采集系统的性能瓶颈集中在账号、代理、限流、媒体下载和接口稳定性。</p>
+          </div>
+          <div class="grid-2">
+            <div class="panel">
+              <h3>当前可优化点</h3>
+              <div class="mini-bars">
+                <p>媒体下载并发 <span class="badge">max_concurrent_requests</span></p><div class="mini-bar"><span style="--w:76%"></span></div>
+                <p>账号冷却与限流退避</p><div class="mini-bar"><span style="--w:68%"></span></div>
+                <p>代理质量评分</p><div class="mini-bar"><span style="--w:58%"></span></div>
+                <p>任务分片与批量调度</p><div class="mini-bar"><span style="--w:62%"></span></div>
+              </div>
+            </div>
+            <div class="panel">
+              <h3>演进策略</h3>
+              <ul class="list">
+                <li>引入 Backpressure：账号/代理失败率高时自动降并发。</li>
+                <li>分离下载池和接口请求池，避免媒体下载拖慢 GraphQL 请求。</li>
+                <li>对目标账号做游标缓存和断点续采。</li>
+                <li>抽象任务队列，为多 worker 和分布式调度做准备。</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" aria-label="可观测路线">
+        <div class="stage">
+          <div class="slide-header">
+            <div><p class="eyebrow">15 / Observability Roadmap</p><h2>可观测路线：把失败从页面日志升级为指标系统</h2></div>
+            <p class="lead">将失败率、耗时、下载量、账号状态和代理健康度沉淀为可查询、可告警的指标。</p>
+          </div>
+          <div class="workflow">
+            <span class="flow-token" aria-hidden="true"></span>
+            <div class="flow-node" data-step="01"><strong>Metrics</strong><span>task_duration / failure_type / download_count</span></div>
+            <div class="flow-node" data-step="02"><strong>Prometheus</strong><span>定时 scrape 指标接口</span></div>
+            <div class="flow-node" data-step="03"><strong>Alertmanager</strong><span>连续失败、限流、账号异常触发告警</span></div>
+            <div class="flow-node" data-step="04"><strong>DevGuard Agent</strong><span>结合服务日志和资源状态分析</span></div>
+            <div class="flow-node" data-step="05"><strong>飞书通知</strong><span>任务完成/失败/账号失效自动播报</span></div>
+            <div class="flow-node" data-step="06"><strong>Dashboard</strong><span>按账号、代理、任务类型聚合趋势</span></div>
+            <div class="flow-node" data-step="07"><strong>Review</strong><span>周期性分析失败原因和优化效果</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" aria-label="智能分析路线">
+        <div class="stage">
+          <div class="slide-header">
+            <div><p class="eyebrow">16 / Intelligence Roadmap</p><h2>智能分析路线：ETL、聚类与摘要</h2></div>
+            <p class="lead">在采集产物之上增加清洗、去重、语义聚类、评分和摘要生成能力。</p>
+          </div>
+          <div class="pipeline">
+            <div class="pipeline-step" style="--i:0"><strong>Raw</strong><span>CSV、媒体、日志、链接</span></div>
+            <div class="pipeline-step" style="--i:1"><strong>ETL</strong><span>字段标准化、时间统一</span></div>
+            <div class="pipeline-step" style="--i:2"><strong>Dedupe</strong><span>URL / 文本 hash / 相似去重</span></div>
+            <div class="pipeline-step" style="--i:3"><strong>Embedding</strong><span>语义向量化</span></div>
+            <div class="pipeline-step" style="--i:4"><strong>Cluster</strong><span>事件主题聚类</span></div>
+            <div class="pipeline-step" style="--i:5"><strong>Score</strong><span>互动、时效、来源、主题相关性</span></div>
+            <div class="pipeline-step" style="--i:6"><strong>Top-K</strong><span>输出榜单和摘要</span></div>
+          </div>
+          <div class="grid-3">
+            <div class="panel"><h3>ETL 输入</h3><p>统一字段、时间、链接和媒体索引。</p></div>
+            <div class="panel"><h3>主题聚类</h3><p>按账号、主题、互动趋势形成持续追踪。</p></div>
+            <div class="panel"><h3>自动摘要</h3><p>为 RAG、舆情摘要和自动报告提供结构化输入。</p></div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <div class="hint">键盘：↑ ↓ / 空格翻页，Home 回首页，End 到末页</div>
+    <div class="controls" aria-label="幻灯片控制">
+      <button class="control-btn" id="prevBtn" type="button" aria-label="上一页">↑</button>
+      <div class="counter" id="counter">1 / 17</div>
+      <button class="control-btn" id="nextBtn" type="button" aria-label="下一页">↓</button>
+    </div>
+  </div>
+
+  <script>
+    const slidesEl = document.getElementById("slides");
+    const progressBar = document.getElementById("progressBar");
+    const counter = document.getElementById("counter");
+    const prevBtn = document.getElementById("prevBtn");
+    const nextBtn = document.getElementById("nextBtn");
+    const total = document.querySelectorAll(".slide").length;
+    let index = 0;
+
+    function readHashIndex() {
+      const value = Number.parseInt(window.location.hash.replace("#", ""), 10);
+      if (!Number.isFinite(value)) return 0;
+      return Math.max(0, Math.min(total - 1, value - 1));
+    }
+
+    function goTo(nextIndex, syncHash = true) {
+      index = Math.max(0, Math.min(total - 1, nextIndex));
+      slidesEl.style.transform = `translateY(${-index * 100}vh)`;
+      progressBar.style.width = `${((index + 1) / total) * 100}%`;
+      counter.textContent = `${index + 1} / ${total}`;
+      prevBtn.disabled = index === 0;
+      nextBtn.disabled = index === total - 1;
+      const nextHash = `#${index + 1}`;
+      if (syncHash && window.location.hash !== nextHash) {
+        history.replaceState(null, "", nextHash);
+      }
+    }
+
+    prevBtn.addEventListener("click", () => goTo(index - 1));
+    nextBtn.addEventListener("click", () => goTo(index + 1));
+    window.addEventListener("keydown", (event) => {
+      const key = event.key;
+      if (key === "ArrowDown" || key === "ArrowRight" || key === "PageDown" || key === " ") { event.preventDefault(); goTo(index + 1); }
+      if (key === "ArrowUp" || key === "ArrowLeft" || key === "PageUp") { event.preventDefault(); goTo(index - 1); }
+      if (key === "Home") { event.preventDefault(); goTo(0); }
+      if (key === "End") { event.preventDefault(); goTo(total - 1); }
+    });
+    window.addEventListener("hashchange", () => goTo(readHashIndex(), false));
+
+    let touchStartY = null;
+    window.addEventListener("touchstart", (event) => { touchStartY = event.touches[0].clientY; }, { passive: true });
+    window.addEventListener("touchend", (event) => {
+      if (touchStartY === null) return;
+      const delta = event.changedTouches[0].clientY - touchStartY;
+      if (Math.abs(delta) > 60) goTo(index + (delta < 0 ? 1 : -1));
+      touchStartY = null;
+    }, { passive: true });
+    goTo(readHashIndex());
+  </script>
+</body>
+</html>

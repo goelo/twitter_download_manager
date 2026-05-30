@@ -16,6 +16,7 @@ class ResourceGovernanceTest(unittest.TestCase):
             conn.execute('delete from scheduled_tasks')
             conn.execute('delete from tasks')
             conn.execute('delete from proxies')
+            conn.execute('delete from tracked_bloggers')
             conn.execute('delete from accounts')
 
     def test_auto_account_skips_cooldown_account(self):
@@ -61,6 +62,7 @@ class ResourceGovernanceTest(unittest.TestCase):
         self.assertEqual(capacity['api_budget_24h'], 20)
         self.assertEqual(capacity['api_remaining_estimate'], 13)
         self.assertEqual(capacity['level'], 'healthy')
+        self.assertEqual(capacity['adaptive_policy']['risk_level'], 'healthy')
 
     def test_account_capacity_marks_cooldown_and_expired_accounts(self):
         with web_app.db() as conn:
@@ -85,6 +87,8 @@ class ResourceGovernanceTest(unittest.TestCase):
         self.assertGreater(cooling['cooldown_remaining_seconds'], 0)
         self.assertEqual(expired['score'], 0)
         self.assertEqual(expired['level'], 'expired')
+        self.assertEqual(cooling['adaptive_policy']['risk_level'], 'cooldown')
+        self.assertEqual(expired['adaptive_policy']['risk_level'], 'expired')
 
     def test_account_capacity_marks_exhausted_daily_api_budget(self):
         with web_app.db() as conn:
@@ -108,6 +112,151 @@ class ResourceGovernanceTest(unittest.TestCase):
         self.assertEqual(capacity['api_remaining_estimate'], 0)
         self.assertEqual(capacity['level'], 'limited')
         self.assertLessEqual(capacity['score'], 25)
+
+    def test_adaptive_policy_marks_watch_and_risky_accounts(self):
+        with web_app.db() as conn:
+            watch_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, created_at, tier, daily_quota)
+                values (?, ?, ?, ?, ?, 'active', ?, 'stable', 100)
+                ''',
+                ('watch', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'watch', web_app.now()),
+            ).lastrowid
+            risky_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, created_at, tier, daily_quota)
+                values (?, ?, ?, ?, ?, 'active', ?, 'stable', 100)
+                ''',
+                ('risky', 'a2', 'c2', 'auth_token=a2; ct0=c2;', 'risky', web_app.now()),
+            ).lastrowid
+            conn.execute(
+                '''
+                insert into tasks (user_id, account_id, task_type, title, config_json, status, output_dir, log_path, created_at, api_calls, last_error_type)
+                values (1, ?, 'benchmark_account', 'limited', '{}', 'failed', ?, ?, ?, 1, 'rate_limited')
+                ''',
+                (risky_id, os.environ['TW_WEB_DATA_DIR'], os.path.join(os.environ['TW_WEB_DATA_DIR'], 'risky.log'), web_app.now()),
+            )
+            conn.execute(
+                '''
+                insert into tasks (user_id, account_id, task_type, title, config_json, status, output_dir, log_path, created_at, api_calls, last_error_type)
+                values (1, ?, 'benchmark_account', 'failed', '{}', 'failed', ?, ?, ?, 1, 'failed')
+                ''',
+                (watch_id, os.environ['TW_WEB_DATA_DIR'], os.path.join(os.environ['TW_WEB_DATA_DIR'], 'watch.log'), web_app.now()),
+            )
+            watch = web_app.account_capacity_payload(conn.execute('select * from accounts where id = ?', (watch_id,)).fetchone(), conn)
+            risky = web_app.account_capacity_payload(conn.execute('select * from accounts where id = ?', (risky_id,)).fetchone(), conn)
+
+        self.assertEqual(watch['adaptive_policy']['risk_level'], 'watch')
+        self.assertEqual(risky['adaptive_policy']['risk_level'], 'risky')
+        self.assertEqual(risky['adaptive_policy']['max_tweet_limit'], web_app.RISKY_TWEET_LIMIT)
+
+    def test_watch_account_creation_applies_adaptive_throttle(self):
+        with web_app.db() as conn:
+            account_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, last_checked_at, created_at, tier, daily_quota)
+                values (?, ?, ?, ?, ?, 'active', ?, ?, 'stable', 100)
+                ''',
+                ('watch-create', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'watchcreate', web_app.now(), web_app.now()),
+            ).lastrowid
+            conn.execute(
+                '''
+                insert into tasks (user_id, account_id, task_type, title, config_json, status, output_dir, log_path, created_at, api_calls, last_error_type)
+                values (1, ?, 'benchmark_account', 'failed', '{}', 'failed', ?, ?, ?, 1, 'failed')
+                ''',
+                (account_id, os.environ['TW_WEB_DATA_DIR'], os.path.join(os.environ['TW_WEB_DATA_DIR'], 'watch-create.log'), web_app.now()),
+            )
+
+        config = {
+            'task_type': 'benchmark_account',
+            'targets': 'watchcreate',
+            'time_range': web_app.task_default_time_range(),
+            'tweet_limit': 50,
+            'max_concurrent_requests': 5,
+            'likes': True,
+            'has_retweet': True,
+        }
+        web_app.validate_task_config(config)
+        task_id = web_app.create_queued_task(1, account_id, config)
+
+        with web_app.db() as conn:
+            task = conn.execute('select * from tasks where id = ?', (task_id,)).fetchone()
+        saved = web_app.json.loads(task['config_json'])
+        self.assertTrue(saved['adaptive_throttle_applied'])
+        self.assertEqual(saved['tweet_limit'], web_app.WATCH_TWEET_LIMIT)
+        self.assertEqual(saved['max_concurrent_requests'], 2)
+        self.assertFalse(saved['likes'])
+        self.assertEqual(saved['adaptive_policy']['risk_level'], 'watch')
+
+    def test_risky_account_creation_forces_small_slice(self):
+        with web_app.db() as conn:
+            account_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, last_checked_at, created_at, tier, daily_quota)
+                values (?, ?, ?, ?, ?, 'active', ?, ?, 'stable', 100)
+                ''',
+                ('risky-create', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'riskycreate', web_app.now(), web_app.now()),
+            ).lastrowid
+            conn.execute(
+                '''
+                insert into tasks (user_id, account_id, task_type, title, config_json, status, output_dir, log_path, created_at, api_calls, last_error_type)
+                values (1, ?, 'benchmark_account', 'limited', '{}', 'failed', ?, ?, ?, 1, 'rate_limited')
+                ''',
+                (account_id, os.environ['TW_WEB_DATA_DIR'], os.path.join(os.environ['TW_WEB_DATA_DIR'], 'limited.log'), web_app.now()),
+            )
+
+        config = {
+            'task_type': 'benchmark_account',
+            'targets': 'riskycreate',
+            'time_range': web_app.task_default_time_range(),
+            'tweet_limit': 50,
+            'max_concurrent_requests': 4,
+            'likes': True,
+            'has_retweet': True,
+            'high_lights': True,
+        }
+        web_app.validate_task_config(config)
+        task_id = web_app.create_queued_task(1, account_id, config)
+
+        with web_app.db() as conn:
+            task = conn.execute('select * from tasks where id = ?', (task_id,)).fetchone()
+        saved = web_app.json.loads(task['config_json'])
+        self.assertEqual(saved['tweet_limit'], web_app.RISKY_TWEET_LIMIT)
+        self.assertEqual(saved['max_concurrent_requests'], 1)
+        self.assertFalse(saved['likes'])
+        self.assertFalse(saved['has_retweet'])
+        self.assertFalse(saved['high_lights'])
+        self.assertEqual(saved['adaptive_policy']['risk_level'], 'risky')
+
+    def test_cooldown_and_expired_accounts_reject_new_tasks(self):
+        with web_app.db() as conn:
+            cooldown_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, last_checked_at, created_at, tier, cooldown_until)
+                values (?, ?, ?, ?, ?, 'active', ?, ?, 'stable', ?)
+                ''',
+                ('cooldown-create', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'cooldowncreate', web_app.now(), web_app.now(), web_app.seconds_from_now(3600)),
+            ).lastrowid
+            expired_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, last_checked_at, created_at, tier)
+                values (?, ?, ?, ?, ?, 'auth_expired', ?, ?, 'stable')
+                ''',
+                ('expired-create', 'a2', 'c2', 'auth_token=a2; ct0=c2;', 'expiredcreate', web_app.now(), web_app.now()),
+            ).lastrowid
+
+        config = {
+            'task_type': 'benchmark_account',
+            'targets': 'cooldowncreate',
+            'time_range': web_app.task_default_time_range(),
+            'tweet_limit': 5,
+            'max_concurrent_requests': 1,
+        }
+        web_app.validate_task_config(config)
+        with self.assertRaises(web_app.HTTPException):
+            web_app.create_queued_task(1, cooldown_id, dict(config))
+        with self.assertRaises(web_app.HTTPException):
+            web_app.create_queued_task(1, expired_id, {**config, 'targets': 'expiredcreate'})
 
     def test_auto_account_prefers_higher_capacity_score(self):
         with web_app.db() as conn:
@@ -205,6 +354,93 @@ class ResourceGovernanceTest(unittest.TestCase):
     def test_estimate_benchmark_api_budget(self):
         config = {'task_type': 'benchmark_account', 'targets': 'one\ntwo', 'tweet_limit': 21}
         self.assertEqual(web_app.estimate_api_budget(config), 6)
+
+    def test_target_limits_drive_budget_and_validation(self):
+        config = {'task_type': 'benchmark_account', 'targets': 'one\ntwo', 'tweet_limit': 10, 'target_limits': {'one': 5, 'two': 41}}
+        web_app.validate_task_config(config)
+        self.assertEqual(config['target_limits'], {'one': 5, 'two': 41})
+        self.assertEqual(web_app.estimate_api_budget(config), 6)
+
+        invalid = {'task_type': 'benchmark_account', 'targets': 'one', 'tweet_limit': 10, 'target_limits': {'two': 5}}
+        with self.assertRaises(web_app.HTTPException):
+            web_app.validate_task_config(invalid)
+
+    def test_create_task_records_tracked_bloggers(self):
+        with web_app.db() as conn:
+            account_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, last_checked_at, created_at, tier)
+                values (?, ?, ?, ?, ?, 'active', ?, ?, 'stable')
+                ''',
+                ('blogger-account', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'acct', web_app.now(), web_app.now()),
+            ).lastrowid
+            second_account_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, last_checked_at, created_at, tier)
+                values (?, ?, ?, ?, ?, 'active', ?, ?, 'stable')
+                ''',
+                ('blogger-account-2', 'a2', 'c2', 'auth_token=a2; ct0=c2;', 'acct2', web_app.now(), web_app.now()),
+            ).lastrowid
+
+        config = {
+            'task_type': 'benchmark_account',
+            'targets': 'one\ntwo',
+            'time_range': web_app.task_default_time_range(),
+            'tweet_limit': 10,
+            'target_limits': {'one': 5, 'two': 12},
+            'max_concurrent_requests': 1,
+        }
+        web_app.validate_task_config(config)
+        web_app.create_queued_task(1, account_id, config)
+        web_app.create_queued_task(1, second_account_id, dict(config))
+
+        with web_app.db() as conn:
+            rows = conn.execute('select * from tracked_bloggers order by screen_name').fetchall()
+        self.assertEqual([row['screen_name'] for row in rows], ['one', 'two'])
+        self.assertEqual([row['default_tweet_limit'] for row in rows], [5, 12])
+        self.assertEqual([row['use_count'] for row in rows], [2, 2])
+
+    def test_blogger_crud_helpers(self):
+        with web_app.db() as conn:
+            row = web_app.upsert_tracked_blogger(conn, 'https://x.com/example', default_tweet_limit=7)
+            self.assertEqual(row['screen_name'], 'example')
+            self.assertEqual(row['default_tweet_limit'], 7)
+            updated = web_app.upsert_tracked_blogger(conn, '@example', default_tweet_limit=9, mark_used=True)
+            self.assertEqual(updated['default_tweet_limit'], 9)
+            self.assertEqual(updated['use_count'], 1)
+
+    def test_adaptive_throttle_caps_target_limits(self):
+        with web_app.db() as conn:
+            account_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, last_checked_at, created_at, tier, daily_quota)
+                values (?, ?, ?, ?, ?, 'active', ?, ?, 'stable', 100)
+                ''',
+                ('risky-limits', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'riskylimits', web_app.now(), web_app.now()),
+            ).lastrowid
+            conn.execute(
+                '''
+                insert into tasks (user_id, account_id, task_type, title, config_json, status, output_dir, log_path, created_at, api_calls, last_error_type)
+                values (1, ?, 'benchmark_account', 'limited', '{}', 'failed', ?, ?, ?, 1, 'rate_limited')
+                ''',
+                (account_id, os.environ['TW_WEB_DATA_DIR'], os.path.join(os.environ['TW_WEB_DATA_DIR'], 'risky-limits.log'), web_app.now()),
+            )
+
+        config = {
+            'task_type': 'benchmark_account',
+            'targets': 'one\ntwo',
+            'time_range': web_app.task_default_time_range(),
+            'tweet_limit': 50,
+            'target_limits': {'one': 5, 'two': 50},
+            'max_concurrent_requests': 2,
+        }
+        web_app.validate_task_config(config)
+        task_id = web_app.create_queued_task(1, account_id, config)
+        with web_app.db() as conn:
+            task = conn.execute('select * from tasks where id = ?', (task_id,)).fetchone()
+        saved = web_app.json.loads(task['config_json'])
+        self.assertEqual(saved['target_limits']['one'], 5)
+        self.assertEqual(saved['target_limits']['two'], web_app.RISKY_TWEET_LIMIT)
 
     def test_parse_crawler_rate_limit_reset_marker(self):
         reset_at = web_app.seconds_from_now(3600)

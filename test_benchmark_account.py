@@ -5,7 +5,7 @@ import unittest
 os.environ['TW_WEB_DATA_DIR'] = tempfile.mkdtemp(prefix='twitter-benchmark-account-')
 os.environ['TW_WEB_PUBLIC'] = '0'
 
-from benchmark_down import parse_screen_name  # noqa: E402
+from benchmark_down import BenchmarkAccountDownloader, parse_screen_name  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 from web_app import db, delete_task_row, now, validate_task_config  # noqa: E402
 
@@ -95,6 +95,17 @@ class BenchmarkAccountTest(unittest.TestCase):
         with self.assertRaises(HTTPException) as exc:
             validate_task_config(config)
         self.assertEqual(exc.exception.status_code, 400)
+
+    def test_benchmark_downloader_uses_per_target_limits(self):
+        config = {
+            'targets': 'one,two',
+            'tweet_limit': 10,
+            'target_limits': {'one': 3},
+            'time_range': '2026-05-01:2026-05-25',
+        }
+        downloader = BenchmarkAccountDownloader(config, 'auth_token=a; ct0=c;', tempfile.mkdtemp(prefix='twitter-benchmark-limits-'))
+        self.assertEqual(downloader.limit_for_user('one'), 3)
+        self.assertEqual(downloader.limit_for_user('two'), 10)
 
 
 if __name__ == '__main__':

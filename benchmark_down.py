@@ -131,6 +131,8 @@ class BenchmarkAccountDownloader:
         self.proxy = proxy_for_httpx(config.get('proxy'))
         self.proxy_value = config.get('proxy') or ''
         self.tweet_limit = int(config.get('tweet_limit') or 50)
+        raw_target_limits = config.get('target_limits') if isinstance(config.get('target_limits'), dict) else {}
+        self.target_limits = {str(key).lower().lstrip('@'): max(1, int(value or self.tweet_limit)) for key, value in raw_target_limits.items()}
         self.has_video = bool(config.get('has_video', True))
         self.has_retweet = bool(config.get('has_retweet'))
         self.max_concurrent_requests = int(config.get('max_concurrent_requests') or 2)
@@ -152,6 +154,9 @@ class BenchmarkAccountDownloader:
             'x-csrf-token': re.findall(r'ct0=(.*?);', cookie)[0],
         }
         self.client = CrawlerClient(cookie=cookie, proxy=self.proxy_value, account_key=cookie, headers=self.headers, budget=self.budget)
+
+    def limit_for_user(self, screen_name):
+        return int(self.target_limits.get(str(screen_name or '').lower().lstrip('@')) or self.tweet_limit)
 
     def get_user_info(self, screen_name):
         url = 'https://twitter.com/i/api/graphql/xc8f1g7BYqr6VTzTbvNlGw/UserByScreenName?variables={"screen_name":"' + screen_name + '","withSafetyModeUserFields":false}&features={"hidden_profile_likes_enabled":false,"hidden_profile_subscriptions_enabled":false,"responsive_web_graphql_exclude_directive_enabled":true,"verified_phone_label_enabled":false,"subscriptions_verification_info_verified_since_enabled":true,"highlights_tweets_tab_ui_enabled":true,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_skip_user_profile_image_extensions_enabled":false,"responsive_web_graphql_timeline_navigation_enabled":true}&fieldToggles={"withAuxiliaryUserLabels":false}'
@@ -330,9 +335,10 @@ class BenchmarkAccountDownloader:
     def run_user(self, screen_name):
         self.headers['referer'] = 'https://twitter.com/' + screen_name
         user = self.get_user_info(screen_name)
+        tweet_limit = self.limit_for_user(user['screen_name'])
         folder_path = os.path.join(self.output_dir, del_special_char(user['screen_name']))
         os.makedirs(folder_path, exist_ok=True)
-        print(f'开始对标账号采集: @{user["screen_name"]}，最多 {self.tweet_limit} 条推文', flush=True)
+        print(f'开始对标账号采集: @{user["screen_name"]}，最多 {tweet_limit} 条推文', flush=True)
         if self.api_budget_limit:
             print(f'预计 API 调用预算: {self.api_budget_limit} 次，已用 {self.request_count} 次', flush=True)
 
@@ -342,7 +348,7 @@ class BenchmarkAccountDownloader:
         all_media_jobs = []
         seen_tweets = set()
         try:
-            while saved_tweets < self.tweet_limit:
+            while saved_tweets < tweet_limit:
                 url = self.tweet_url(user['rest_id'], cursor)
                 response = self.client.get_text(url, cache_namespace='benchmark_timeline', cache_key=f'{user["rest_id"]}:{cursor or "first"}:{self.time_range}:{self.has_retweet}', cache_ttl=self.cache_timeline_ttl)
                 self.request_count = self.budget.used
@@ -353,7 +359,7 @@ class BenchmarkAccountDownloader:
                     break
                 stop_for_time = False
                 for item in entries:
-                    if saved_tweets >= self.tweet_limit:
+                    if saved_tweets >= tweet_limit:
                         break
                     tweet = self.extract_tweet(item)
                     if not tweet:

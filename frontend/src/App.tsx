@@ -8,7 +8,7 @@ import { Button } from './components/ui/button';
 import { Card, CardContent, CardHeader } from './components/ui/card';
 import { Input } from './components/ui/input';
 import { Textarea } from './components/ui/textarea';
-import type { Account, BitBrowserImportResult, DashboardHeatmap, DashboardHeatmapCell, DashboardHeatmapItem, DashboardTask, LoginQueueItem, LoginQueueParseResponse, OperationLog, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, ScheduleFormValues, Task, TaskFormValues, TaskPreview, TaskResultItem, TaskResultMedia, TaskType } from './lib/types';
+import type { Account, BitBrowserImportResult, DashboardHeatmap, DashboardHeatmapCell, DashboardHeatmapItem, DashboardTask, LoginQueueItem, LoginQueueParseResponse, OperationLog, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, ScheduleFormValues, Task, TaskFormValues, TaskPreview, TaskResultItem, TaskResultMedia, TaskType, TrackedBlogger } from './lib/types';
 import { cn } from './lib/utils';
 import { getTaskTemplateById, taskTemplates, type TaskTemplate } from './lib/templates';
 import { defaultRunTimeRange, defaultTaskTimeRange, presetFromTimeRange, rangeFromPreset, splitTimeRange, timeRangeError, TIME_PRESETS, todayString, type TimePreset } from './lib/timeRange';
@@ -49,6 +49,7 @@ const DEFAULT_TASK_FORM: TaskFormValues = {
   min_faves: 0,
   min_retweets: 0,
   search_advanced: '',
+  target_limits: {},
 };
 
 const DEFAULT_RUN_FORM: RunConfig = {
@@ -207,9 +208,19 @@ function levelTone(level: string): BadgeTone {
 
 function accountCapacityTone(level?: string): BadgeTone {
   if (level === 'healthy') return 'success';
-  if (level === 'limited' || level === 'cooldown') return 'warning';
+  if (level === 'limited' || level === 'cooldown' || level === 'watch') return 'warning';
   if (level === 'expired' || level === 'risky') return 'danger';
   return 'neutral';
+}
+
+function riskLevelLabel(level?: string) {
+  return {
+    healthy: '健康',
+    watch: '观察',
+    risky: '高风险',
+    cooldown: '冷却',
+    expired: '失效',
+  }[level || ''] || level || '-';
 }
 
 function levelLabel(level: string) {
@@ -1319,6 +1330,8 @@ function TaskRow({ task, onDelete, deleting }: { task: Task; onDelete: (id: numb
 function TaskFormPage() {
   const { data: accountData } = useQuery({ queryKey: ['accounts'], queryFn: () => api.accounts() });
   const { data: proxiesData } = useQuery({ queryKey: ['proxies'], queryFn: () => api.proxies() });
+  const queryClient = useQueryClient();
+  const { data: bloggersData } = useQuery({ queryKey: ['bloggers'], queryFn: () => api.bloggers() });
   const [searchParams] = useSearchParams();
   const selectedTemplateId = searchParams.get('template');
   const accounts = accountData?.accounts;
@@ -1329,6 +1342,11 @@ function TaskFormPage() {
   const [timePreset, setTimePreset] = useState<TimePreset>('7d');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [error, setError] = useState('');
+  const [bloggerForm, setBloggerForm] = useState({ screen_name: '', default_tweet_limit: 10 });
+  const [showBatchLimit, setShowBatchLimit] = useState(false);
+  const [batchLimit, setBatchLimit] = useState(10);
+  const [savingDefaultLimits, setSavingDefaultLimits] = useState(false);
+  const bloggers = bloggersData?.bloggers || [];
   const create = useMutation({
     mutationFn: () => {
       const nextError = timeRangeError(form.time_range);
@@ -1339,6 +1357,24 @@ function TaskFormPage() {
       return api.createTask(form);
     },
     onSuccess: (res) => (window.location.href = `/tasks/${res.task.id}`),
+    onError: (err: Error) => setError(err.message),
+  });
+  const addBlogger = useMutation({
+    mutationFn: () => api.addBlogger(bloggerForm),
+    onSuccess: async () => {
+      setBloggerForm({ screen_name: '', default_tweet_limit: 10 });
+      await queryClient.invalidateQueries({ queryKey: ['bloggers'] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+  const updateBlogger = useMutation({
+    mutationFn: ({ id, default_tweet_limit }: { id: number; default_tweet_limit: number }) => api.updateBlogger(id, { default_tweet_limit }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['bloggers'] }),
+    onError: (err: Error) => setError(err.message),
+  });
+  const deleteBlogger = useMutation({
+    mutationFn: (id: number) => api.deleteBlogger(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['bloggers'] }),
     onError: (err: Error) => setError(err.message),
   });
 
@@ -1371,6 +1407,56 @@ function TaskFormPage() {
     setError('');
     setForm((prev) => ({ ...prev, time_range: `${start}:${end}` }));
   };
+  const syncSelectedBloggers = (targetLimits: Record<string, number>) => {
+    const targets = Object.keys(targetLimits).join('\n');
+    setForm((prev) => ({
+      ...prev,
+      targets,
+      target_limits: targetLimits,
+      task_type: 'benchmark_account',
+    }));
+  };
+  const toggleBlogger = (blogger: TrackedBlogger, checked: boolean) => {
+    const key = blogger.screen_name.toLowerCase();
+    const next = { ...(form.target_limits || {}) };
+    if (checked) {
+      next[key] = Number(next[key] || blogger.default_tweet_limit || form.tweet_limit || 10);
+    } else {
+      delete next[key];
+    }
+    syncSelectedBloggers(next);
+  };
+  const updateSelectedLimit = (screenName: string, limit: number) => {
+    const next = { ...(form.target_limits || {}), [screenName.toLowerCase()]: Math.max(1, Number(limit) || 1) };
+    syncSelectedBloggers(next);
+  };
+  const selectedTargetLimits = form.target_limits || {};
+  const selectedBloggers = bloggers.filter((blogger) => Object.prototype.hasOwnProperty.call(selectedTargetLimits, blogger.screen_name.toLowerCase()));
+  const selectedBloggerCount = Object.keys(selectedTargetLimits).length;
+  const plannedTweetCount = Object.values(selectedTargetLimits).reduce((total, limit) => total + Math.max(1, Number(limit) || 1), 0);
+  const applyBatchLimit = () => {
+    const safeLimit = Math.max(1, Number(batchLimit) || 1);
+    const next = { ...selectedTargetLimits };
+    Object.keys(next).forEach((screenName) => {
+      next[screenName] = safeLimit;
+    });
+    syncSelectedBloggers(next);
+    setShowBatchLimit(false);
+  };
+  const clearSelectedBloggers = () => syncSelectedBloggers({});
+  const saveSelectedDefaultLimits = async () => {
+    if (!selectedBloggers.length) return;
+    setSavingDefaultLimits(true);
+    setError('');
+    try {
+      await Promise.all(selectedBloggers.map((blogger) => api.updateBlogger(blogger.id, { default_tweet_limit: Math.max(1, Number(selectedTargetLimits[blogger.screen_name.toLowerCase()]) || 1) })));
+      await queryClient.invalidateQueries({ queryKey: ['bloggers'] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存默认条数失败');
+    } finally {
+      setSavingDefaultLimits(false);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -1399,11 +1485,127 @@ function TaskFormPage() {
           <Field label="目标账号">
             <Textarea
               value={form.targets}
-              onChange={(e) => setForm((prev) => ({ ...prev, targets: e.target.value }))}
+              onChange={(e) => setForm((prev) => ({ ...prev, targets: e.target.value, target_limits: {} }))}
               rows={3}
               placeholder="https://x.com/arsenal 或 @arsenal"
             />
           </Field>
+          <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))]">
+            <div className="flex flex-wrap items-end justify-between gap-3 border-b border-[hsl(var(--line))] px-4 py-3">
+              <div>
+                <div className="font-semibold">博主库</div>
+                <div className="mt-1 text-xs text-[hsl(var(--muted))]">选择历史博主，并为每个博主设置本次采集条数。</div>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-[160px_100px_auto]">
+                <Input value={bloggerForm.screen_name} onChange={(e) => setBloggerForm((prev) => ({ ...prev, screen_name: e.target.value }))} placeholder="@username" />
+                <Input type="number" min={1} value={bloggerForm.default_tweet_limit} onChange={(e) => setBloggerForm((prev) => ({ ...prev, default_tweet_limit: Number(e.target.value) }))} />
+                <Button size="sm" onClick={() => addBlogger.mutate()} disabled={addBlogger.isPending || !bloggerForm.screen_name.trim()}>
+                  <Plus className="h-4 w-4" />
+                  添加
+                </Button>
+              </div>
+            </div>
+            <div className="border-b border-[hsl(var(--line))] px-4 py-3">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <div className="text-sm font-semibold">博主配置</div>
+                  <div className="mt-1 text-xs text-[hsl(var(--muted))]">
+                    {selectedBloggerCount ? `已选 ${selectedBloggerCount} 个博主 / 计划采集 ${plannedTweetCount} 条` : '先在下方选择博主，再批量配置本次采集条数。'}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="secondary" size="sm" onClick={() => setShowBatchLimit((prev) => !prev)} disabled={!selectedBloggerCount}>
+                    <Target className="h-4 w-4" />
+                    批量设置本次条数
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={saveSelectedDefaultLimits} disabled={!selectedBloggers.length || savingDefaultLimits}>
+                    <CheckCircle2 className="h-4 w-4" />
+                    保存为默认条数
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={clearSelectedBloggers} disabled={!selectedBloggerCount}>
+                    <X className="h-4 w-4" />
+                    清空选择
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => queryClient.invalidateQueries({ queryKey: ['bloggers'] })} disabled={bloggersData === undefined}>
+                    <RefreshCcw className="h-4 w-4" />
+                    刷新博主库
+                  </Button>
+                </div>
+              </div>
+              {showBatchLimit && (
+                <div className="mt-3 flex flex-col gap-2 rounded-lg border border-[hsl(var(--line))] bg-[rgba(15,23,42,0.58)] p-3 sm:flex-row sm:items-end">
+                  <Field label="批量条数">
+                    <Input type="number" min={1} value={batchLimit} onChange={(e) => setBatchLimit(Number(e.target.value))} />
+                  </Field>
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={applyBatchLimit} disabled={!selectedBloggerCount}>
+                      应用
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => setShowBatchLimit(false)}>
+                      取消
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="overflow-auto">
+              <table className="w-full min-w-[760px] border-collapse text-sm">
+                <thead className="text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
+                  <tr>
+                    <th className="px-4 py-3">选择</th>
+                    <th className="px-4 py-3">博主</th>
+                    <th className="px-4 py-3">本次条数</th>
+                    <th className="px-4 py-3">默认条数</th>
+                    <th className="px-4 py-3">最近使用</th>
+                    <th className="px-4 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bloggers.map((blogger) => {
+                    const key = blogger.screen_name.toLowerCase();
+                    const selected = Object.prototype.hasOwnProperty.call(form.target_limits || {}, key);
+                    return (
+                      <tr key={blogger.id} className="border-t border-[hsl(var(--line))]">
+                        <td className="px-4 py-3">
+                          <input type="checkbox" checked={selected} onChange={(e) => toggleBlogger(blogger, e.target.checked)} />
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="font-medium">@{blogger.screen_name}</div>
+                          <div className="text-xs text-[hsl(var(--muted))]">使用 {blogger.use_count} 次</div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <Input
+                            type="number"
+                            min={1}
+                            value={selected ? form.target_limits[key] : blogger.default_tweet_limit}
+                            onChange={(e) => updateSelectedLimit(blogger.screen_name, Number(e.target.value))}
+                            disabled={!selected}
+                          />
+                        </td>
+                        <td className="px-4 py-3">
+                          <Input
+                            type="number"
+                            min={1}
+                            value={blogger.default_tweet_limit}
+                            onChange={(e) => updateBlogger.mutate({ id: blogger.id, default_tweet_limit: Number(e.target.value) })}
+                          />
+                        </td>
+                        <td className="px-4 py-3 text-[hsl(var(--muted))]">{blogger.last_used_at || '-'}</td>
+                        <td className="px-4 py-3 text-right">
+                          <Button variant="danger" size="sm" onClick={() => deleteBlogger.mutate(blogger.id)} disabled={deleteBlogger.isPending}>
+                            删除
+                          </Button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {!bloggers.length && (
+                    <tr><td className="px-4 py-8 text-center text-[hsl(var(--muted))]" colSpan={6}>还没有博主记录；创建任务后会自动记录，也可以手动添加。</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
           <div className="grid gap-4 md:grid-cols-2">
             <Field label="采集条数">
               <Input type="number" min={1} value={form.tweet_limit} onChange={(e) => setForm((prev) => ({ ...prev, tweet_limit: Number(e.target.value) }))} />
@@ -1479,7 +1681,7 @@ function TaskFormPage() {
               </select>
             </Field>
             <Field label="目标用户 / 推文链接">
-              <Textarea value={form.targets} onChange={(e) => setForm((prev) => ({ ...prev, targets: e.target.value }))} rows={4} />
+              <Textarea value={form.targets} onChange={(e) => setForm((prev) => ({ ...prev, targets: e.target.value, target_limits: {} }))} rows={4} />
             </Field>
             <Field label="并发下载数">
               <Input type="number" value={form.max_concurrent_requests} onChange={(e) => setForm((prev) => ({ ...prev, max_concurrent_requests: Number(e.target.value) }))} />
@@ -1672,6 +1874,11 @@ function TaskDetailPage({ id }: { id: number }) {
 
   if (isLoading && !task) return <div className="text-sm text-[hsl(var(--muted))]">加载中...</div>;
   if (!task) return <div>任务不存在</div>;
+  const adaptiveChanges = Array.isArray(task.config?.adaptive_throttle_changes)
+    ? task.config.adaptive_throttle_changes as Array<{ field: string; from: unknown; to: unknown; reason: string }>
+    : [];
+  const adaptivePolicy = task.config?.adaptive_policy as { risk_level?: string; recommended_action?: string } | undefined;
+  const adaptiveThrottleApplied = task.config?.adaptive_throttle_applied === true;
 
   return (
     <div className="space-y-4">
@@ -1724,6 +1931,34 @@ function TaskDetailPage({ id }: { id: number }) {
         <InfoCard title="结束时间" value={task.finished_at || '-'} />
         <InfoCard title="重试次数" value={`${task.retry_count}/${task.max_retries}`} />
       </div>
+
+      {adaptiveThrottleApplied && (
+        <Card>
+          <CardHeader>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
+                <h3 className="font-semibold">已自动降载</h3>
+              </div>
+              <Badge tone={accountCapacityTone(adaptivePolicy?.risk_level)}>
+                {riskLevelLabel(adaptivePolicy?.risk_level)}
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="text-sm text-[hsl(var(--muted))]">{adaptivePolicy?.recommended_action || '系统已按账号风险自动收敛任务配置。'}</div>
+            <div className="grid gap-2 md:grid-cols-2">
+              {adaptiveChanges.map((change) => (
+                <div key={`${change.field}-${String(change.to)}`} className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2 text-sm">
+                  <div className="font-medium">{change.field}</div>
+                  <div className="mt-1 text-xs text-[hsl(var(--muted))]">{String(change.from)} → {String(change.to)}</div>
+                  <div className="mt-1 text-xs text-[hsl(var(--muted))]">{change.reason}</div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid gap-3 md:grid-cols-3">
         <InfoCard title="最后重试" value={task.last_retry_at || '-'} />
@@ -3144,6 +3379,14 @@ function AccountsPage() {
                           <div className="text-xs text-[hsl(var(--muted))]">
                             API {account.capacity.api_remaining_estimate}/{account.capacity.api_budget_24h} · 任务 {account.capacity.task_remaining_24h}/{account.capacity.task_limit_24h}
                           </div>
+                          {account.capacity.adaptive_policy && (
+                            <div className="flex flex-wrap items-center gap-2 text-xs text-[hsl(var(--muted))]">
+                              <Badge tone={accountCapacityTone(account.capacity.adaptive_policy.risk_level)}>
+                                {riskLevelLabel(account.capacity.adaptive_policy.risk_level)}
+                              </Badge>
+                              <span className="max-w-[240px] truncate">{account.capacity.adaptive_policy.recommended_action}</span>
+                            </div>
+                          )}
                           <div className="text-xs text-[hsl(var(--muted))]">下次可用：{account.capacity.next_available_at || '现在'}</div>
                         </div>
                       ) : '-'}

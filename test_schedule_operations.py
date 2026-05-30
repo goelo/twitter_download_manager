@@ -53,9 +53,12 @@ class ScheduleOperationsTest(unittest.TestCase):
         with web_app.db() as conn:
             row = conn.execute("select value from app_meta where key = 'schema_version'").fetchone()
             columns = {item['name'] for item in conn.execute('pragma table_info(scheduled_tasks)').fetchall()}
-        self.assertEqual(int(row['value']), 4)
+        self.assertEqual(int(row['value']), 5)
         self.assertIn('timezone', columns)
         self.assertIn('consecutive_failures', columns)
+        with web_app.db() as conn:
+            blogger_columns = {item['name'] for item in conn.execute('pragma table_info(tracked_bloggers)').fetchall()}
+        self.assertIn('screen_name', blogger_columns)
 
     def test_run_now_does_not_change_next_run_at(self):
         account_id = self.add_account()

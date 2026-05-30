@@ -96,6 +96,12 @@ ACCOUNT_TRANSIENT_COOLDOWN_SECONDS = max(0, int(os.environ.get('TW_ACCOUNT_TRANS
 PROXY_MIN_INTERVAL_SECONDS = max(0, int(os.environ.get('TW_PROXY_MIN_INTERVAL_SECONDS', str(3 * 60)) or 0))
 PROXY_FAILURE_COOLDOWN_SECONDS = max(0, int(os.environ.get('TW_PROXY_FAILURE_COOLDOWN_SECONDS', str(30 * 60)) or 0))
 PROXY_RATE_LIMIT_COOLDOWN_SECONDS = max(0, int(os.environ.get('TW_PROXY_RATE_LIMIT_COOLDOWN_SECONDS', str(2 * 60 * 60)) or 0))
+ADAPTIVE_THROTTLE_ENABLED = os.environ.get('TW_ADAPTIVE_THROTTLE_ENABLED', '1').lower() not in {'0', 'false', 'no', 'off'}
+RISKY_TWEET_LIMIT = max(1, int(os.environ.get('TW_RISKY_TWEET_LIMIT', '10') or 10))
+WATCH_TWEET_LIMIT = max(RISKY_TWEET_LIMIT, int(os.environ.get('TW_WATCH_TWEET_LIMIT', '20') or 20))
+RISKY_MIN_INTERVAL_SECONDS = max(0, int(os.environ.get('TW_RISKY_MIN_INTERVAL_SECONDS', '3600') or 3600))
+WATCH_ACCOUNT_API_INTERVAL_SECONDS = max(0.1, float(os.environ.get('TW_WATCH_ACCOUNT_API_INTERVAL_SECONDS', '15') or 15))
+RISKY_ACCOUNT_API_INTERVAL_SECONDS = max(WATCH_ACCOUNT_API_INTERVAL_SECONDS, float(os.environ.get('TW_RISKY_ACCOUNT_API_INTERVAL_SECONDS', '30') or 30))
 DEFAULT_MAX_CONCURRENT_REQUESTS = max(1, int(os.environ.get('TW_DEFAULT_MAX_CONCURRENT_REQUESTS', '2') or 2))
 MAX_CONCURRENT_REQUESTS_CAP = max(DEFAULT_MAX_CONCURRENT_REQUESTS, int(os.environ.get('TW_MAX_CONCURRENT_REQUESTS_CAP', '16') or 16))
 ACCOUNT_HEALTH_MIN_INTERVAL_SECONDS = max(0, int(os.environ.get('TW_ACCOUNT_HEALTH_MIN_INTERVAL_SECONDS', str(30 * 60)) or 0))
@@ -476,6 +482,7 @@ def apply_schema_migrations():
             (2, migration_scheduler_and_logs),
             (3, migration_runtime_indexes),
             (4, migration_anti_detection_and_realtime),
+            (5, migration_tracked_bloggers),
         ]
         for version, migration in migrations:
             if current >= version:
@@ -676,6 +683,28 @@ def migration_anti_detection_and_realtime(conn):
     # 3. 代理表新增健康检查字段
     ensure_column(conn, 'proxies', 'health_score', 'real not null default 1.0')
     ensure_column(conn, 'proxies', 'last_check_at', 'text')
+
+
+def create_tracked_bloggers_table(conn):
+    conn.executescript(
+        '''
+        create table if not exists tracked_bloggers (
+            id integer primary key autoincrement,
+            screen_name text not null unique,
+            display_name text,
+            default_tweet_limit integer not null default 10,
+            last_used_at text,
+            use_count integer not null default 0,
+            created_at text not null,
+            updated_at text not null
+        );
+        create index if not exists idx_tracked_bloggers_last_used on tracked_bloggers(last_used_at desc);
+        '''
+    )
+
+
+def migration_tracked_bloggers(conn):
+    create_tracked_bloggers_table(conn)
 
 
 def seconds_from_now(seconds):
@@ -894,6 +923,7 @@ def init_db():
         conn.execute('create index if not exists idx_media_assets_task on media_assets(task_id)')
         conn.execute('create index if not exists idx_media_assets_url on media_assets(media_url)')
         ensure_column(conn, 'result_db_configs', 'last_synced_at', 'text')
+        create_tracked_bloggers_table(conn)
     apply_schema_migrations()
 
 
@@ -2468,6 +2498,49 @@ def account_api_budget_24h(account):
     return 80 if account_tier(account) == 'new' else 200
 
 
+def adaptive_policy_for_capacity(capacity):
+    level = capacity.get('level') or 'healthy'
+    score = int(capacity.get('score') or 0)
+    rate_limited = int(capacity.get('rate_limited_24h') or 0)
+    failures = int(capacity.get('failure_24h') or 0)
+    if level == 'expired':
+        risk_level = 'expired'
+        max_tweet_limit = 0
+        min_interval = 0
+        recommended_action = '重新登录账号后再分配任务'
+    elif level == 'cooldown':
+        risk_level = 'cooldown'
+        max_tweet_limit = 0
+        min_interval = int(capacity.get('cooldown_remaining_seconds') or 0)
+        recommended_action = '等待冷却结束，避免继续请求'
+    elif level == 'risky' or score < 45 or rate_limited:
+        risk_level = 'risky'
+        max_tweet_limit = RISKY_TWEET_LIMIT
+        min_interval = RISKY_MIN_INTERVAL_SECONDS
+        recommended_action = '仅运行小切片任务，关闭扩展采集并降低并发'
+    elif level == 'limited' or score < 70 or failures:
+        risk_level = 'watch'
+        max_tweet_limit = WATCH_TWEET_LIMIT
+        min_interval = max(ACCOUNT_MIN_INTERVAL_SECONDS, int(capacity.get('cooldown_remaining_seconds') or 0))
+        recommended_action = '降低采集条数和请求节奏，观察账号稳定性'
+    else:
+        risk_level = 'healthy'
+        max_tweet_limit = None
+        min_interval = account_min_interval_seconds({'tier': 'stable'})
+        recommended_action = '按配置运行，继续遵守预算和间隔'
+    allowed_task_types = ['benchmark_account', 'user_media', 'text', 'profile'] if risk_level in {'watch', 'risky'} else ['benchmark_account', 'user_media', 'search', 'text', 'replies', 'profile']
+    if risk_level in {'cooldown', 'expired'}:
+        allowed_task_types = []
+    return {
+        'enabled': ADAPTIVE_THROTTLE_ENABLED,
+        'risk_level': risk_level,
+        'allowed_task_types': allowed_task_types,
+        'max_tweet_limit': max_tweet_limit,
+        'min_interval_seconds': min_interval,
+        'recommended_action': recommended_action,
+    }
+
+
 def account_capacity_payload(account, conn=None):
     close_conn = False
     if conn is None:
@@ -2523,7 +2596,7 @@ def account_capacity_payload(account, conn=None):
             else:
                 level = 'healthy'
                 reason = '账号状态正常'
-        return {
+        payload = {
             'score': int(score),
             'level': level,
             'reason': reason,
@@ -2538,6 +2611,8 @@ def account_capacity_payload(account, conn=None):
             'rate_limited_24h': usage['rate_limited_count'],
             'failure_24h': usage['failure_count'],
         }
+        payload['adaptive_policy'] = adaptive_policy_for_capacity(payload)
+        return payload
     finally:
         if close_conn:
             conn.close()
@@ -2609,14 +2684,98 @@ def estimate_api_budget(config):
     task_type = config.get('task_type')
     if task_type == 'benchmark_account':
         targets = normalize_user_targets(config.get('targets') or '')
-        target_count = len([item for item in targets.replace(',', '\n').splitlines() if item.strip()]) or 1
+        parsed_targets = [item.strip().lower() for item in targets.replace(',', '\n').splitlines() if item.strip()]
+        target_count = len(parsed_targets) or 1
         tweet_limit = max(1, int(config.get('tweet_limit') or 10))
+        target_limits = config.get('target_limits') if isinstance(config.get('target_limits'), dict) else {}
+        if target_limits and parsed_targets:
+            return sum(1 + ((max(1, int(target_limits.get(target, tweet_limit) or tweet_limit)) + 19) // 20) for target in parsed_targets)
         return target_count * (1 + ((tweet_limit + 19) // 20))
     if task_type == 'user_media':
         targets = normalize_user_targets(config.get('targets') or '')
         target_count = len([item for item in targets.replace(',', '\n').splitlines() if item.strip()]) or 1
         return target_count * 3
     return 0
+
+
+def adaptive_throttle_interval(policy):
+    risk_level = policy.get('risk_level')
+    if risk_level == 'risky':
+        return RISKY_ACCOUNT_API_INTERVAL_SECONDS
+    if risk_level == 'watch':
+        return WATCH_ACCOUNT_API_INTERVAL_SECONDS
+    return None
+
+
+def set_config_value_with_change(config, changes, key, value, reason):
+    old = config.get(key)
+    if old == value:
+        return
+    config[key] = value
+    changes.append({'field': key, 'from': old, 'to': value, 'reason': reason})
+
+
+def apply_target_limit_cap(config, changes, max_tweet_limit, reason):
+    if config.get('task_type') != 'benchmark_account' or not max_tweet_limit:
+        return
+    cap = int(max_tweet_limit)
+    current_limit = int(config.get('tweet_limit') or cap)
+    if current_limit > cap:
+        set_config_value_with_change(config, changes, 'tweet_limit', cap, reason)
+    target_limits = config.get('target_limits') if isinstance(config.get('target_limits'), dict) else {}
+    if not target_limits:
+        return
+    next_limits = {}
+    changed = False
+    for target, limit in target_limits.items():
+        parsed = max(1, int(limit or cap))
+        next_value = min(parsed, cap)
+        next_limits[target] = next_value
+        changed = changed or next_value != parsed
+    if changed:
+        set_config_value_with_change(config, changes, 'target_limits', next_limits, reason)
+
+
+def apply_adaptive_throttle(config, account, conn):
+    config.pop('adaptive_throttle_applied', None)
+    config.pop('adaptive_throttle_changes', None)
+    config.pop('adaptive_policy', None)
+    if not ADAPTIVE_THROTTLE_ENABLED:
+        return config
+    capacity = account_capacity_payload(account, conn)
+    policy = capacity.get('adaptive_policy') or {}
+    risk_level = policy.get('risk_level') or 'healthy'
+    if risk_level in {'cooldown', 'expired'}:
+        raise HTTPException(status_code=400, detail=f'账号当前为 {risk_level}，不分配新任务：{policy.get("recommended_action") or capacity.get("reason")}')
+    changes = []
+    max_tweet_limit = policy.get('max_tweet_limit')
+    apply_target_limit_cap(config, changes, max_tweet_limit, f'{risk_level} 风险等级限制采集条数')
+    if risk_level == 'watch':
+        if int(config.get('max_concurrent_requests') or 1) > 2:
+            set_config_value_with_change(config, changes, 'max_concurrent_requests', 2, '观察期账号降低并发')
+        for key in ['likes']:
+            if config.get(key):
+                set_config_value_with_change(config, changes, key, False, '观察期账号关闭扩展采集')
+    if risk_level == 'risky':
+        if int(config.get('max_concurrent_requests') or 1) > 1:
+            set_config_value_with_change(config, changes, 'max_concurrent_requests', 1, '高风险账号强制单并发')
+        for key in ['has_retweet', 'likes', 'high_lights']:
+            if config.get(key):
+                set_config_value_with_change(config, changes, key, False, '高风险账号关闭扩展采集')
+        if config.get('task_type') == 'replies' and int(config.get('min_replies') or 1) < 3:
+            set_config_value_with_change(config, changes, 'min_replies', 3, '高风险账号减少深层评论采集')
+    interval = adaptive_throttle_interval(policy)
+    if interval:
+        set_config_value_with_change(config, changes, 'account_api_interval_seconds', interval, f'{risk_level} 风险等级增加请求间隔')
+    new_budget = estimate_api_budget(config)
+    if new_budget:
+        old_budget = int(config.get('api_budget') or 0)
+        if old_budget != new_budget:
+            set_config_value_with_change(config, changes, 'api_budget', new_budget, '降载后重新估算 API 预算')
+    config['adaptive_policy'] = policy
+    config['adaptive_throttle_applied'] = bool(changes)
+    config['adaptive_throttle_changes'] = changes
+    return config
 
 
 def select_account_for_task_in_conn(conn, preferred_account_id=0):
@@ -2641,6 +2800,60 @@ def select_account_for_task_in_conn(conn, preferred_account_id=0):
 def select_account_for_task(preferred_account_id=0):
     with db() as conn:
         return select_account_for_task_in_conn(conn, preferred_account_id)
+
+
+def blogger_payload(row):
+    return {
+        'id': row['id'],
+        'screen_name': row['screen_name'],
+        'display_name': row['display_name'],
+        'default_tweet_limit': row['default_tweet_limit'],
+        'last_used_at': row['last_used_at'],
+        'use_count': row['use_count'],
+        'created_at': row['created_at'],
+        'updated_at': row['updated_at'],
+    }
+
+
+def upsert_tracked_blogger(conn, screen_name, display_name='', default_tweet_limit=None, mark_used=False):
+    normalized = normalize_user_targets(screen_name, label='博主用户名')
+    if not normalized or ',' in normalized:
+        raise HTTPException(status_code=400, detail='博主用户名需要是单个用户名或主页链接')
+    screen_name = normalized.lower()
+    default_limit = max(1, int(default_tweet_limit or 10))
+    current = conn.execute('select * from tracked_bloggers where lower(screen_name) = lower(?)', (screen_name,)).fetchone()
+    current_time = now()
+    if current:
+        conn.execute(
+            '''
+            update tracked_bloggers
+            set display_name = coalesce(nullif(?, ''), display_name),
+                default_tweet_limit = ?,
+                last_used_at = case when ? then ? else last_used_at end,
+                use_count = use_count + ?,
+                updated_at = ?
+            where id = ?
+            ''',
+            (display_name or '', default_limit if default_tweet_limit is not None else current['default_tweet_limit'], 1 if mark_used else 0, current_time, 1 if mark_used else 0, current_time, current['id']),
+        )
+        return conn.execute('select * from tracked_bloggers where id = ?', (current['id'],)).fetchone()
+    conn.execute(
+        '''
+        insert into tracked_bloggers (screen_name, display_name, default_tweet_limit, last_used_at, use_count, created_at, updated_at)
+        values (?, ?, ?, ?, ?, ?, ?)
+        ''',
+        (screen_name, display_name or None, default_limit, current_time if mark_used else None, 1 if mark_used else 0, current_time, current_time),
+    )
+    return conn.execute('select * from tracked_bloggers where lower(screen_name) = lower(?)', (screen_name,)).fetchone()
+
+
+def record_task_bloggers_in_conn(conn, config):
+    if config.get('task_type') not in {'benchmark_account', 'user_media', 'text', 'profile'}:
+        return
+    targets = normalize_user_targets(config.get('targets') or '')
+    target_limits = config.get('target_limits') if isinstance(config.get('target_limits'), dict) else {}
+    for target in [item.strip() for item in targets.split(',') if item.strip()]:
+        upsert_tracked_blogger(conn, target, default_tweet_limit=target_limits.get(target.lower()) or config.get('tweet_limit') or 10, mark_used=True)
 
 
 def select_proxy_for_task_in_conn(conn, preferred_proxy_id=0, manual_proxy='', account_id=None):
@@ -3482,6 +3695,10 @@ def create_queued_task(user_id, account_id, config, resource_mode='manual', sche
             conn.execute('begin immediate')
             account = select_account_for_task_in_conn(conn, requested_account_id)
             account_id = account['id']
+            apply_adaptive_throttle(config, account, conn)
+            api_budget = int(config.get('api_budget') or estimate_api_budget(config) or 0)
+            if api_budget:
+                config['api_budget'] = api_budget
             proxy = select_proxy_for_task_in_conn(conn, requested_proxy_id, config.get('proxy') or '', account_id=account_id)
             if proxy:
                 config['proxy'] = normalize_proxy_url(proxy['proxy'])
@@ -3515,6 +3732,7 @@ def create_queued_task(user_id, account_id, config, resource_mode='manual', sche
             )
             task_id = cursor.lastrowid
             reserve_resources_for_task_in_conn(conn, account_id, proxy_id, reserved_at)
+            record_task_bloggers_in_conn(conn, config)
             conn.commit()
         except Exception:
             conn.rollback()
@@ -3898,6 +4116,12 @@ def run_task(task, worker_id='worker-1'):
     child_env.setdefault('TW_MEDIA_DOWNLOAD_RETRIES', str(MEDIA_DOWNLOAD_RETRIES))
     child_env.setdefault('TW_DEFAULT_MAX_CONCURRENT_REQUESTS', str(DEFAULT_MAX_CONCURRENT_REQUESTS))
     child_env.setdefault('TW_MAX_CONCURRENT_REQUESTS_CAP', str(MAX_CONCURRENT_REQUESTS_CAP))
+    try:
+        runtime_config = json.loads(task['config_json'] or '{}')
+        if runtime_config.get('account_api_interval_seconds'):
+            child_env['TW_ACCOUNT_API_INTERVAL_SECONDS'] = str(runtime_config['account_api_interval_seconds'])
+    except Exception:
+        pass
     # 实时数据展示：注入任务 ID 和数据库路径，供爬虫脚本双写
     child_env['TW_TASK_ID'] = str(task['id'])
     child_env['TW_REALTIME_DB_PATH'] = str(DB_PATH)
@@ -4175,6 +4399,21 @@ def normalize_user_targets(value, label='目标账号'):
     return ','.join(parsed)
 
 
+def parse_target_limits(value):
+    if not isinstance(value, dict):
+        return {}
+    parsed = {}
+    for raw_target, raw_limit in value.items():
+        target = normalize_user_targets(str(raw_target or ''), label='每博主条数目标')
+        if not target or ',' in target:
+            raise HTTPException(status_code=400, detail='每博主条数目标需要是单个用户名')
+        limit = parse_int_field(raw_limit, 0, '每博主采集条数')
+        if limit <= 0:
+            raise HTTPException(status_code=400, detail='每博主采集条数需要是大于 0 的整数')
+        parsed[target.lower()] = limit
+    return parsed
+
+
 def build_task_config(form):
     task_type = form.get('task_type')
     config = {
@@ -4201,6 +4440,7 @@ def build_task_config(form):
         }
     )
     config['api_budget'] = int(form.get('api_budget') or 0)
+    config['target_limits'] = parse_target_limits(form.get('target_limits'))
     return config
 
 
@@ -4240,6 +4480,12 @@ def validate_task_config(config):
         if tweet_limit <= 0:
             raise HTTPException(status_code=400, detail='拉取条数需要是大于 0 的整数')
         config['tweet_limit'] = tweet_limit
+        target_limits = parse_target_limits(config.get('target_limits'))
+        target_set = {item.strip().lower() for item in str(config.get('targets') or '').split(',') if item.strip()}
+        invalid_limits = sorted(set(target_limits) - target_set)
+        if invalid_limits:
+            raise HTTPException(status_code=400, detail=f'每博主条数包含不在目标列表中的用户名: {", ".join(invalid_limits)}')
+        config['target_limits'] = target_limits
         if not int(config.get('api_budget') or 0):
             config['api_budget'] = estimate_api_budget(config)
     if task_type == 'user_media':
@@ -5087,6 +5333,67 @@ def api_delete_result_db_config(config_id: int, user=Depends(require_api_admin))
     return {'ok': True}
 
 
+@app.get('/api/bloggers')
+def api_bloggers(user=Depends(require_api_user)):
+    with db() as conn:
+        rows = conn.execute('select * from tracked_bloggers order by coalesce(last_used_at, updated_at) desc, screen_name').fetchall()
+    return {'bloggers': [blogger_payload(row) for row in rows]}
+
+
+@app.post('/api/bloggers')
+async def api_add_blogger(request: Request, user=Depends(require_api_user)):
+    data = await request.json()
+    with db() as conn:
+        row = upsert_tracked_blogger(
+            conn,
+            data.get('screen_name') or data.get('username') or '',
+            display_name=str(data.get('display_name') or '').strip(),
+            default_tweet_limit=parse_int_field(data.get('default_tweet_limit'), 10, '默认采集条数'),
+            mark_used=False,
+        )
+    return {'blogger': blogger_payload(row)}
+
+
+@app.patch('/api/bloggers/{blogger_id}')
+async def api_update_blogger(blogger_id: int, request: Request, user=Depends(require_api_user)):
+    data = await request.json()
+    with db() as conn:
+        row = conn.execute('select * from tracked_bloggers where id = ?', (blogger_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail='博主不存在')
+        screen_name = row['screen_name']
+        if data.get('screen_name'):
+            screen_name = normalize_user_targets(data.get('screen_name'), label='博主用户名')
+            if not screen_name or ',' in screen_name:
+                raise HTTPException(status_code=400, detail='博主用户名需要是单个用户名或主页链接')
+        default_limit = parse_int_field(data.get('default_tweet_limit') if 'default_tweet_limit' in data else row['default_tweet_limit'], 10, '默认采集条数')
+        if default_limit <= 0:
+            raise HTTPException(status_code=400, detail='默认采集条数需要是大于 0 的整数')
+        try:
+            conn.execute(
+                '''
+                update tracked_bloggers
+                set screen_name = ?, display_name = ?, default_tweet_limit = ?, updated_at = ?
+                where id = ?
+                ''',
+                (screen_name.lower(), str(data.get('display_name') if 'display_name' in data else row['display_name'] or '').strip() or None, default_limit, now(), blogger_id),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=400, detail='该博主已存在')
+        row = conn.execute('select * from tracked_bloggers where id = ?', (blogger_id,)).fetchone()
+    return {'blogger': blogger_payload(row)}
+
+
+@app.delete('/api/bloggers/{blogger_id}')
+def api_delete_blogger(blogger_id: int, user=Depends(require_api_user)):
+    with db() as conn:
+        row = conn.execute('select id from tracked_bloggers where id = ?', (blogger_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail='博主不存在')
+        conn.execute('delete from tracked_bloggers where id = ?', (blogger_id,))
+    return {'ok': True}
+
+
 @app.post('/api/tasks')
 async def api_create_task(request: Request, user=Depends(require_api_user)):
     data = await request.json()
@@ -5113,6 +5420,7 @@ async def api_create_task(request: Request, user=Depends(require_api_user)):
             'min_retweets': int(data.get('min_retweets') or 0),
             'search_advanced': data.get('search_advanced') or '',
             'api_budget': int(data.get('api_budget') or 0),
+            'target_limits': data.get('target_limits') or {},
         }
     )
     try:
