@@ -10,6 +10,7 @@ from pathlib import Path
 
 HOST = '127.0.0.1'
 PORT = int(os.environ.get('TW_LOCAL_LOGIN_PORT', '18765') or 18765)
+HELPER_VERSION = '1.1.0'
 DEFAULT_ALLOWED_HOSTS = {
     'twitter.198-12-70-103.nip.io',
     '127.0.0.1',
@@ -76,6 +77,20 @@ def json_response(handler, status, payload):
     handler.send_header('Cache-Control', 'no-store')
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def health_payload():
+    chrome_path = find_chrome()
+    with active_lock:
+        busy = bool(active_login and active_login.is_alive())
+    return {
+        'ok': True,
+        'status': 'ready',
+        'version': HELPER_VERSION,
+        'chrome_found': bool(chrome_path),
+        'allowed_hosts': sorted(ALLOWED_HOSTS),
+        'active_login': busy,
+    }
 
 
 def post_callback(callback_url, payload):
@@ -176,7 +191,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.rstrip('/') in {'', '/health'}:
-            json_response(self, 200, {'ok': True, 'status': 'ready'})
+            json_response(self, 200, health_payload())
             return
         json_response(self, 404, {'ok': False, 'message': 'not found'})
 
@@ -186,7 +201,16 @@ class Handler(BaseHTTPRequestHandler):
             return
         origin = self.headers.get('Origin', '')
         if not allowed_origin(origin):
-            json_response(self, 403, {'ok': False, 'message': '不允许的工作台来源。'})
+            json_response(
+                self,
+                403,
+                {
+                    'ok': False,
+                    'code': 'origin_not_allowed',
+                    'message': '当前 VPS 域名未加入本地授权助手允许列表。请重新运行安装脚本，或设置 TW_LOCAL_LOGIN_ALLOWED_HOSTS 后重启助手。',
+                    'allowed_hosts': sorted(ALLOWED_HOSTS),
+                },
+            )
             return
         try:
             length = int(self.headers.get('Content-Length') or '0')
@@ -199,16 +223,38 @@ class Handler(BaseHTTPRequestHandler):
         callback_url = str(payload.get('callback_url') or '').strip()
         expires_in = int(payload.get('expires_in') or 300)
         if not token or not callback_url:
-            json_response(self, 400, {'ok': False, 'message': '缺少 token 或 callback_url。'})
+            json_response(self, 400, {'ok': False, 'code': 'missing_fields', 'message': 'VPS 授权任务参数不完整，请刷新账号页后重试。'})
             return
         if not allowed_url(callback_url):
-            json_response(self, 403, {'ok': False, 'message': 'callback_url 不在允许的工作台域名内。'})
+            parsed = urllib.parse.urlparse(callback_url)
+            json_response(
+                self,
+                403,
+                {
+                    'ok': False,
+                    'code': 'callback_not_allowed',
+                    'message': f'VPS 回传地址 {parsed.hostname or ""} 未加入允许列表。请重新运行安装脚本，或设置 TW_LOCAL_LOGIN_ALLOWED_HOSTS 后重启助手。',
+                    'allowed_hosts': sorted(ALLOWED_HOSTS),
+                },
+            )
+            return
+
+        if not find_chrome():
+            json_response(
+                self,
+                409,
+                {
+                    'ok': False,
+                    'code': 'browser_missing',
+                    'message': '这台电脑未找到 Chrome 或 Edge。请先安装 Chrome/Edge，或设置 TW_LOCAL_CHROME_PATH 后重启助手。',
+                },
+            )
             return
 
         global active_login
         with active_lock:
             if active_login and active_login.is_alive():
-                json_response(self, 409, {'ok': False, 'message': '已有本地 Chrome 登录正在进行。'})
+                json_response(self, 409, {'ok': False, 'code': 'login_busy', 'message': '已有一个本地授权窗口正在进行，请先完成或关闭那个窗口。'})
                 return
             active_login = threading.Thread(target=run_login, args=(token, callback_url, expires_in), daemon=True)
             active_login.start()

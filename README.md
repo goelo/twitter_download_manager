@@ -102,16 +102,30 @@ The script reads `settings.json`. At minimum, configure `user_lst` and `cookie` 
 The Web console supports three account input methods:
 
 - Manually enter `auth_token` and `ct0`.
-- Use "Local Chrome Login" through the helper service on your own computer.
+- Use "Local Authorization Login": the VPS creates a login task, the user's own computer opens Chrome, and the helper sends the cookie back to the VPS.
 - Import Cookies from BitBrowser local API when the selected browser profile has already logged in to X/Twitter.
 
-For local Chrome login, start the helper first:
+For VPS deployments, keep the Web backend running on the VPS and run the local helper on the operator's Windows computer. The VPS never needs to log in to Chrome. The browser login feature is enabled by default, and can be made explicit with:
+
+```text
+TW_WEB_ENABLE_BROWSER_LOGIN=1
+```
+
+The operator flow is:
+
+1. Open the VPS Web console account page from the Windows computer that will authorize the account.
+2. Click "Local Authorization Login".
+3. If the page says the local helper is not detected, click "Download/Start Local Authorization Helper" and run the downloaded installer.
+4. After installation, click "I have started it, retry Chrome".
+5. Complete X/Twitter password, email verification, or 2FA in the Chrome window that opens locally.
+
+The installer stores the helper under the user's local AppData directory, starts it in the background, and registers a Windows logon startup task. When `auth_token` and `ct0` are detected, the helper posts them to the VPS callback URL and the account is saved automatically. The helper listens on `127.0.0.1:18765` and only returns the session fields required by this project.
+
+Advanced users can also start the helper manually from a checked-out project directory:
 
 ```powershell
 start_local_login_helper.bat
 ```
-
-Keep the helper window open, then trigger the login flow from the account page. The helper listens on `127.0.0.1:18765` and only returns the session fields required by this project.
 
 If the Web console uses a custom domain, allow it with:
 

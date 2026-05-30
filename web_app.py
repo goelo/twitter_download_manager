@@ -235,6 +235,87 @@ def public_base_url(request: Request):
     return f'{proto}://{host}'.rstrip('/')
 
 
+def request_public_hostname(request: Request):
+    host = request.headers.get('x-forwarded-host') or request.headers.get('host') or request.url.netloc
+    return (host.split(',')[0].strip().split(':')[0] or '').lower()
+
+
+def local_login_helper_install_script(base_url, allowed_host):
+    safe_host = re.sub(r'[^A-Za-z0-9.\-]', '', allowed_host or '')
+    if not safe_host:
+        safe_host = 'twitter.198-12-70-103.nip.io'
+    safe_base_url = str(base_url or '').rstrip('/')
+    return f'''@echo off
+setlocal
+set PYTHONUTF8=1
+set "APP_DIR=%LOCALAPPDATA%\\TwitterDownloadLocalLoginHelper"
+set "VPS_HOSTS={safe_host},127.0.0.1,localhost"
+
+echo Installing local authorization helper...
+echo Target: %APP_DIR%
+echo Allowed VPS hosts: %VPS_HOSTS%
+
+where py >nul 2>nul
+if %ERRORLEVEL% EQU 0 (
+  set "PYTHON_CMD=py -3"
+) else (
+  set "PYTHON_CMD=python"
+)
+
+if not exist "%APP_DIR%" mkdir "%APP_DIR%"
+
+echo Downloading helper script from VPS...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -UseBasicParsing -Uri '{safe_base_url}/api/accounts/local-browser-login/helper/script' -OutFile '%APP_DIR%\\local_login_helper.py'"
+if %ERRORLEVEL% NEQ 0 (
+  echo Download failed. Please check network or browser login status.
+  pause
+  exit /b 1
+)
+
+if not exist "%APP_DIR%\\.local-login-helper-venv\\Scripts\\python.exe" (
+  echo Creating helper Python environment...
+  %PYTHON_CMD% -m venv "%APP_DIR%\\.local-login-helper-venv"
+  if %ERRORLEVEL% NEQ 0 (
+    echo Failed to create Python environment. Please install Python 3 first.
+    pause
+    exit /b 1
+  )
+)
+
+"%APP_DIR%\\.local-login-helper-venv\\Scripts\\python.exe" -m pip show playwright >nul 2>nul
+if %ERRORLEVEL% NEQ 0 (
+  echo Installing Playwright runtime...
+  "%APP_DIR%\\.local-login-helper-venv\\Scripts\\python.exe" -m pip install playwright==1.49.1
+  if %ERRORLEVEL% NEQ 0 (
+    echo Failed to install Playwright.
+    pause
+    exit /b 1
+  )
+)
+
+"%APP_DIR%\\.local-login-helper-venv\\Scripts\\python.exe" -m playwright install chromium >nul 2>nul
+
+(
+  echo @echo off
+  echo setlocal
+  echo set PYTHONUTF8=1
+  echo set "TW_LOCAL_LOGIN_ALLOWED_HOSTS=%VPS_HOSTS%"
+  echo cd /d "%APP_DIR%"
+  echo "%APP_DIR%\\.local-login-helper-venv\\Scripts\\python.exe" "%APP_DIR%\\local_login_helper.py"
+) > "%APP_DIR%\\run_local_login_helper.bat"
+
+echo Registering Windows startup task...
+schtasks /Create /TN "TwitterDownloadLocalLoginHelper" /TR "\\"%APP_DIR%\\run_local_login_helper.bat\\"" /SC ONLOGON /RL LIMITED /F >nul 2>nul
+
+echo Starting helper in background...
+start "" /min "%APP_DIR%\\run_local_login_helper.bat"
+
+echo.
+echo Done. Return to the VPS account page and click retry.
+pause
+'''
+
+
 def cleanup_local_browser_login_sessions():
     now_ts = time.time()
     for token, session in list(local_browser_login_sessions.items()):
@@ -1257,11 +1338,17 @@ def result_db_url(config, password=None):
     )
 
 
-def result_db_engine(config):
+def result_db_engine(config, password=None):
     connect_args = {}
     if config['db_type'] == 'mysql' and int(config['ssl_enabled'] or 0):
         connect_args['ssl'] = {}
-    return create_engine(result_db_url(config), pool_pre_ping=True, pool_recycle=1800, connect_args=connect_args)
+    return create_engine(result_db_url(config, password=password), pool_pre_ping=True, pool_recycle=1800, connect_args=connect_args)
+
+
+def test_result_db_connectivity(config, password=None):
+    engine = result_db_engine(config, password=password)
+    with engine.connect() as conn:
+        conn.execute(text('select 1'))
 
 
 def get_enabled_result_db():
@@ -1342,6 +1429,35 @@ def result_db_config_by_id(config_id):
     if not row:
         raise HTTPException(status_code=404, detail='Result database config not found')
     return row
+
+
+def build_result_db_test_config(data):
+    config_id = int(data.get('id') or 0)
+    db_type = str(data.get('db_type') or '').strip().lower()
+    if db_type not in RESULT_DB_TYPES:
+        raise HTTPException(status_code=400, detail='数据库类型只能是 postgresql 或 mysql')
+    host = (data.get('host') or '').strip()
+    database_name = (data.get('database_name') or '').strip()
+    username = (data.get('username') or '').strip()
+    password = str(data.get('password') or '')
+    port = int(data.get('port') or (5432 if db_type == 'postgresql' else 3306))
+    if not host or not database_name or not username:
+        raise HTTPException(status_code=400, detail='主机、数据库名和用户名不能为空')
+    encrypted_password = ''
+    if config_id and not password:
+        existing = result_db_config_by_id(config_id)
+        encrypted_password = existing['encrypted_password']
+    return {
+        'id': config_id,
+        'db_type': db_type,
+        'host': host,
+        'port': port,
+        'database_name': database_name,
+        'username': username,
+        'encrypted_password': encrypted_password,
+        'ssl_enabled': 1 if data.get('ssl_enabled') else 0,
+        'password': password,
+    }
 
 
 def safe_details(details):
@@ -5411,14 +5527,22 @@ async def api_save_result_db_config(request: Request, user=Depends(require_api_a
     return {'config': result_db_payload(row)}
 
 
+@app.post('/api/result-db/test-connection')
+async def api_test_result_db_connection(request: Request, user=Depends(require_api_admin)):
+    data = await request.json()
+    config = build_result_db_test_config(data)
+    try:
+        test_result_db_connectivity(config, password=config['password'] if config['password'] else None)
+        return {'ok': True, 'error': '', 'tested_at': now()}
+    except Exception as exc:
+        return {'ok': False, 'error': redact_sensitive(str(exc)), 'tested_at': now()}
+
+
 @app.post('/api/result-db/{config_id}/test')
 def api_test_result_db_config(config_id: int, user=Depends(require_api_admin)):
     config = result_db_config_by_id(config_id)
     try:
-        engine = result_db_engine(config)
-        with engine.connect() as conn:
-            conn.execute(text('select 1'))
-        ensure_result_db_schema(engine)
+        test_result_db_connectivity(config)
         with db() as conn:
             conn.execute("update result_db_configs set status = 'active', last_tested_at = ?, last_error = null, updated_at = ? where id = ?", (now(), now(), config_id))
             row = conn.execute('select * from result_db_configs where id = ?', (config_id,)).fetchone()
@@ -5754,6 +5878,24 @@ async def api_add_account_manual(request: Request, user=Depends(require_api_admi
 @app.post('/api/accounts/local-browser-login/helper/ensure')
 def api_local_browser_login_helper_ensure(user=Depends(require_api_admin)):
     return ensure_local_login_helper_running()
+
+
+@app.get('/api/accounts/local-browser-login/helper/install')
+def api_local_browser_login_helper_install(request: Request, user=Depends(require_api_admin)):
+    script = local_login_helper_install_script(public_base_url(request), request_public_hostname(request))
+    return Response(
+        script,
+        media_type='application/octet-stream',
+        headers={'Content-Disposition': 'attachment; filename="install_local_login_helper.bat"'},
+    )
+
+
+@app.get('/api/accounts/local-browser-login/helper/script')
+def api_local_browser_login_helper_script():
+    path = BASE_DIR / 'local_login_helper.py'
+    if not path.exists():
+        raise HTTPException(status_code=404, detail='local_login_helper.py not found')
+    return FileResponse(path, media_type='text/x-python', filename='local_login_helper.py')
 
 
 @app.post('/api/accounts/local-browser-login/start')

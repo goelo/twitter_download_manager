@@ -710,6 +710,12 @@ class ResourceGovernanceTest(unittest.TestCase):
         self.assertIn('auto_start_supported', payload)
         self.assertIn('helper_url', payload)
 
+    def test_local_login_helper_install_script_uses_current_vps_host(self):
+        script = web_app.local_login_helper_install_script('https://download.example.com', 'download.example.com')
+        self.assertIn('download.example.com,127.0.0.1,localhost', script)
+        self.assertIn('https://download.example.com/api/accounts/local-browser-login/helper/script', script)
+        self.assertIn('TwitterDownloadLocalLoginHelper', script)
+
 
 if __name__ == '__main__':
     unittest.main()

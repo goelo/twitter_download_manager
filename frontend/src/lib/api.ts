@@ -115,6 +115,7 @@ export const api = {
   },
   resultDbs: () => request<{ configs: ResultDbConfig[]; credential_key_configured: boolean }>('/api/result-db'),
   saveResultDb: (payload: ResultDbFormValues) => request<{ config: ResultDbConfig }>('/api/result-db', { method: 'POST', body: JSON.stringify(payload) }),
+  testResultDbConnection: (payload: ResultDbFormValues) => request<{ ok: boolean; error: string; tested_at: string }>('/api/result-db/test-connection', { method: 'POST', body: JSON.stringify(payload) }),
   testResultDb: (id: number) => request<{ ok: boolean; config: ResultDbConfig; error: string }>(`/api/result-db/${id}/test`, { method: 'POST' }),
   toggleResultDb: (id: number) => request<{ config: ResultDbConfig }>(`/api/result-db/${id}/toggle`, { method: 'POST' }),
   deleteResultDb: (id: number) => request<{ ok: boolean }>(`/api/result-db/${id}`, { method: 'DELETE' }),

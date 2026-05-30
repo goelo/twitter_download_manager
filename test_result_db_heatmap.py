@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 
 os.environ['TW_WEB_DATA_DIR'] = tempfile.mkdtemp(prefix='twitter-result-db-')
 os.environ['TW_WEB_PUBLIC'] = '0'
@@ -38,6 +39,67 @@ class ResultDbHeatmapTest(unittest.TestCase):
         self.assertNotIn('password', payload)
         self.assertNotIn('encrypted_password', payload)
         self.assertEqual(web_app.decrypt_secret(encrypted), 'db-password')
+
+    def test_form_connection_test_uses_saved_password_when_editing(self):
+        encrypted = web_app.encrypt_secret('saved-password')
+        with web_app.db() as conn:
+            row_id = conn.execute(
+                '''
+                insert into result_db_configs
+                  (label, db_type, host, port, database_name, username, encrypted_password, ssl_enabled, enabled, status, created_at, updated_at)
+                values ('result', 'postgresql', 'localhost', 5432, 'analytics', 'user', ?, 0, 1, 'untested', ?, ?)
+                ''',
+                (encrypted, web_app.now(), web_app.now()),
+            ).lastrowid
+
+        config = web_app.build_result_db_test_config({
+            'id': row_id,
+            'db_type': 'postgresql',
+            'host': 'localhost',
+            'port': 5432,
+            'database_name': 'analytics',
+            'username': 'user',
+            'password': '',
+            'ssl_enabled': False,
+        })
+
+        self.assertEqual(config['encrypted_password'], encrypted)
+        self.assertEqual(web_app.decrypt_secret(config['encrypted_password']), 'saved-password')
+
+    def test_saved_connection_test_does_not_prepare_schema(self):
+        encrypted = web_app.encrypt_secret('db-password')
+        with web_app.db() as conn:
+            row_id = conn.execute(
+                '''
+                insert into result_db_configs
+                  (label, db_type, host, port, database_name, username, encrypted_password, ssl_enabled, enabled, status, created_at, updated_at)
+                values ('result', 'postgresql', 'localhost', 5432, 'analytics', 'user', ?, 0, 1, 'untested', ?, ?)
+                ''',
+                (encrypted, web_app.now(), web_app.now()),
+            ).lastrowid
+
+        with patch.object(web_app, 'test_result_db_connectivity') as connectivity, patch.object(web_app, 'ensure_result_db_schema') as ensure_schema:
+            payload = web_app.api_test_result_db_config(row_id, user={'id': 1, 'role': 'admin'})
+
+        self.assertTrue(payload['ok'])
+        connectivity.assert_called_once()
+        ensure_schema.assert_not_called()
+        with web_app.db() as conn:
+            row = conn.execute('select status, last_tested_at, last_error from result_db_configs where id = ?', (row_id,)).fetchone()
+        self.assertEqual(row['status'], 'active')
+        self.assertIsNotNone(row['last_tested_at'])
+        self.assertIsNone(row['last_error'])
+
+    def test_form_connection_test_validation_rejects_missing_fields(self):
+        with self.assertRaises(web_app.HTTPException) as ctx:
+            web_app.build_result_db_test_config({
+                'db_type': 'postgresql',
+                'host': '',
+                'database_name': 'analytics',
+                'username': 'user',
+            })
+
+        self.assertEqual(ctx.exception.status_code, 400)
 
     def test_local_heatmap_has_seven_days_and_hour_cells(self):
         with web_app.db() as conn:
