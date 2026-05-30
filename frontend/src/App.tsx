@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronDown, ChevronRight, CircleUserRound, ClipboardList, Clock3, Database, Edit3, Eye, ExternalLink, FileArchive, FolderKanban, Image, Info, Link2, LogOut, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCcw, Search, ShieldCheck, Play, Save, Square, Target, TrendingUp, Video, X, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronDown, ChevronRight, CircleUserRound, ClipboardList, Clock3, Database, Edit3, Eye, ExternalLink, FileArchive, FolderKanban, Image, Info, LogOut, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCcw, Search, ShieldCheck, Play, Save, Square, Target, TrendingUp, Video, X, Zap } from 'lucide-react';
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from './lib/api';
 import { Badge } from './components/ui/badge';
@@ -11,7 +11,7 @@ import { Textarea } from './components/ui/textarea';
 import type { Account, BitBrowserImportResult, DashboardHeatmap, DashboardHeatmapCell, DashboardHeatmapItem, DashboardTask, LoginQueueItem, LoginQueueParseResponse, OperationLog, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, ScheduleFormValues, Task, TaskFormValues, TaskPreview, TaskResultItem, TaskResultMedia, TaskType, TrackedBlogger } from './lib/types';
 import { cn } from './lib/utils';
 import { getTaskTemplateById, taskTemplates, type TaskTemplate } from './lib/templates';
-import { defaultRunTimeRange, defaultTaskTimeRange, presetFromTimeRange, rangeFromPreset, splitTimeRange, timeRangeError, TIME_PRESETS, todayString, type TimePreset } from './lib/timeRange';
+import { defaultRunTimeRange, presetFromTimeRange, rangeFromPreset, splitTimeRange, timeRangeError, TIME_PRESETS, todayString, type TimePreset } from './lib/timeRange';
 import { TaskLiveView } from './pages/TaskLiveView';
 
 type BadgeTone = 'neutral' | 'success' | 'warning' | 'danger' | 'primary';
