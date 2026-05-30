@@ -2482,6 +2482,177 @@ function TaskMediaPreview({ media }: { media: TaskResultMedia }) {
   );
 }
 
+function xProfileUrl(screenName?: string | null) {
+  const clean = (screenName || '').replace(/^@/, '').trim();
+  return clean ? `https://x.com/${encodeURIComponent(clean)}` : '';
+}
+
+function xSearchUrl(type: 'mention' | 'tag', value: string) {
+  const clean = value.replace(/^[@#]/, '');
+  if (type === 'mention') return `https://x.com/${encodeURIComponent(clean)}`;
+  return `https://x.com/hashtag/${encodeURIComponent(clean)}`;
+}
+
+function LinkedTweetText({ text }: { text?: string | null }) {
+  const value = text || '无正文内容';
+  const pattern = /(https?:\/\/[^\s]+)|(@[A-Za-z0-9_]{1,32})|(#[-\w\u4e00-\u9fff]+)/g;
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(value)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(value.slice(lastIndex, match.index));
+    }
+    const token = match[0];
+    if (token.startsWith('http')) {
+      const href = token.replace(/[),.;!?，。！？）]+$/, '');
+      const trailing = token.slice(href.length);
+      parts.push(
+        <a key={`${token}-${match.index}`} href={href} target="_blank" rel="noreferrer" className="break-all text-[hsl(var(--primary-dark))] hover:text-[hsl(var(--text))]">
+          {href}
+        </a>,
+      );
+      if (trailing) parts.push(trailing);
+    } else if (token.startsWith('@')) {
+      parts.push(
+        <a key={`${token}-${match.index}`} href={xSearchUrl('mention', token)} target="_blank" rel="noreferrer" className="text-[hsl(var(--primary-dark))] hover:text-[hsl(var(--text))]">
+          {token}
+        </a>,
+      );
+    } else {
+      parts.push(
+        <a key={`${token}-${match.index}`} href={xSearchUrl('tag', token)} target="_blank" rel="noreferrer" className="text-[hsl(var(--primary-dark))] hover:text-[hsl(var(--text))]">
+          {token}
+        </a>,
+      );
+    }
+    lastIndex = match.index + token.length;
+  }
+  if (lastIndex < value.length) {
+    parts.push(value.slice(lastIndex));
+  }
+  return <>{parts}</>;
+}
+
+function XMediaTile({ media, extraCount = 0 }: { media: TaskResultMedia; extraCount?: number }) {
+  const canPreview = media.status === 'downloaded' && media.local_url;
+  return (
+    <div className="relative min-h-0 overflow-hidden bg-black/30">
+      {canPreview && mediaIsImage(media) && (
+        <img src={media.local_url || ''} alt={media.file_name || '采集图片'} loading="lazy" className="h-full w-full object-cover" />
+      )}
+      {canPreview && mediaIsVideo(media) && (
+        <video src={media.local_url || ''} controls preload="metadata" className="h-full w-full bg-black/60 object-contain" />
+      )}
+      {!canPreview && (
+        <a href={media.media_url || undefined} target="_blank" rel="noreferrer" className="flex h-full min-h-[160px] w-full flex-col items-center justify-center gap-2 px-4 text-center text-sm text-[hsl(var(--muted))] hover:bg-black/10">
+          {mediaIsVideo(media) ? <Video className="h-6 w-6" /> : <Image className="h-6 w-6" />}
+          <span>仅有源链接</span>
+        </a>
+      )}
+      {extraCount > 0 && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/55 text-2xl font-semibold text-white">
+          +{extraCount}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function XMediaGrid({ media }: { media: TaskResultMedia[] }) {
+  if (!media.length) return null;
+  const visible = media.slice(0, 4);
+  const extra = Math.max(0, media.length - visible.length);
+  const gridClass = visible.length === 1
+    ? 'grid overflow-hidden rounded-2xl border border-[hsl(var(--line))]'
+    : 'grid grid-cols-2 gap-0.5 overflow-hidden rounded-2xl border border-[hsl(var(--line))] bg-[hsl(var(--line))]';
+  return (
+    <div className={gridClass}>
+      {visible.map((item, index) => (
+        <div key={item.id} className={visible.length === 1 ? 'aspect-[16/10] max-h-[620px]' : visible.length === 3 && index === 0 ? 'row-span-2 min-h-[240px]' : 'aspect-square'}>
+          <XMediaTile media={item} extraCount={index === 3 ? extra : 0} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function XMetric({ icon: Icon, value, label }: { icon: typeof MessageCircle; value: number; label: string }) {
+  return (
+    <div className="inline-flex min-w-[76px] items-center gap-2 text-[hsl(var(--muted))]">
+      <Icon className="h-4 w-4" />
+      <span className="tabular-nums">{value || 0}</span>
+      <span className="sr-only">{label}</span>
+    </div>
+  );
+}
+
+function XStyleResultCard({ item, expanded, onToggle }: { item: TaskResultItem; expanded: boolean; onToggle: () => void }) {
+  const displayName = item.display_name || item.screen_name || '未知作者';
+  const screenName = (item.screen_name || '').replace(/^@/, '');
+  const initials = (displayName || screenName || '?').slice(0, 1).toUpperCase();
+  return (
+    <article className="border-t border-[hsl(var(--line))] px-4 py-4 transition-colors hover:bg-[rgba(14,165,233,0.05)]">
+      <div className="grid grid-cols-[44px_minmax(0,1fr)] gap-3">
+        <a
+          href={xProfileUrl(screenName) || undefined}
+          target="_blank"
+          rel="noreferrer"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--panel-soft))] text-sm font-semibold text-[hsl(var(--text))] ring-1 ring-[hsl(var(--line))]"
+          aria-label={screenName ? `打开 @${screenName}` : '作者头像占位'}
+        >
+          {initials}
+        </a>
+        <div className="min-w-0 space-y-3">
+          <div className="flex min-w-0 items-start justify-between gap-3">
+            <button type="button" onClick={onToggle} className="min-w-0 cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))] focus-visible:ring-offset-2 focus-visible:ring-offset-[hsl(var(--panel))]" aria-expanded={expanded}>
+              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="min-w-0 max-w-full truncate font-semibold">{displayName}</span>
+                {screenName && <span className="text-sm text-[hsl(var(--muted))]">@{screenName}</span>}
+                <span className="text-sm text-[hsl(var(--muted))]">·</span>
+                <span className="text-sm text-[hsl(var(--muted))]">{item.tweet_date || item.created_at}</span>
+              </div>
+            </button>
+            <ResultLink href={item.tweet_url}>原文</ResultLink>
+          </div>
+          <button type="button" onClick={onToggle} className="block w-full cursor-pointer whitespace-pre-wrap break-words text-left text-[15px] leading-7 text-[hsl(var(--text))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))] focus-visible:ring-offset-2 focus-visible:ring-offset-[hsl(var(--panel))]">
+            <LinkedTweetText text={item.content} />
+          </button>
+          <XMediaGrid media={item.media} />
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <XMetric icon={MessageCircle} value={item.reply_count} label="评论" />
+              <XMetric icon={Repeat2} value={item.retweet_count} label="转推" />
+              <XMetric icon={Heart} value={item.favorite_count} label="点赞" />
+            </div>
+            <button type="button" onClick={onToggle} className="inline-flex h-9 items-center gap-2 rounded-lg border border-[hsl(var(--line))] px-3 text-sm text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-soft))]" aria-label={expanded ? '收起采集内容详情' : '展开采集内容详情'}>
+              {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              {expanded ? '收起详情' : '查看详情'}
+            </button>
+          </div>
+          {expanded && (
+            <div className="space-y-4 rounded-xl border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-4">
+              <div className="flex flex-wrap gap-2 text-xs text-[hsl(var(--muted))]">
+                <span>作者：{displayName}</span>
+                <span>用户名：{screenName ? `@${screenName}` : '-'}</span>
+                <span>媒体：{item.media.length}</span>
+                <span>来源文件：{item.source_file || '-'}</span>
+              </div>
+              {item.media.length > 0 ? (
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {item.media.map((media) => <TaskMediaPreview key={media.id} media={media} />)}
+                </div>
+              ) : (
+                <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3 py-3 text-sm text-[hsl(var(--muted))]">这条记录没有媒体。</div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </article>
+  );
+}
+
 function TaskResultRow({ item, expanded, onToggle }: { item: TaskResultItem; expanded: boolean; onToggle: () => void }) {
   const mediaLabel = item.media.length ? `${item.media.length} 个媒体` : '无媒体';
   return (
@@ -2558,6 +2729,7 @@ function TaskResultsPanel({
   fallbackPreview?: TaskPreview;
 }) {
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [viewMode, setViewMode] = useState<'x' | 'list'>('x');
   const items = data?.items || [];
   const total = data?.total || 0;
   const canPrev = offset > 0;
@@ -2574,6 +2746,22 @@ function TaskResultsPanel({
             <h3 className="font-semibold">采集内容</h3>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex h-9 overflow-hidden rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-0.5">
+              <button
+                type="button"
+                onClick={() => setViewMode('x')}
+                className={cn('h-8 rounded-md px-3 text-sm transition-colors', viewMode === 'x' ? 'bg-[hsl(var(--primary))] text-white' : 'text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel))]')}
+              >
+                X风格
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('list')}
+                className={cn('h-8 rounded-md px-3 text-sm transition-colors', viewMode === 'list' ? 'bg-[hsl(var(--primary))] text-white' : 'text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel))]')}
+              >
+                列表
+              </button>
+            </div>
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[hsl(var(--muted))]" />
               <Input
@@ -2607,7 +2795,10 @@ function TaskResultsPanel({
       </CardHeader>
       <CardContent className="p-0">
         {isLoading && !items.length && <div className="px-4 py-10 text-center text-sm text-[hsl(var(--muted))]">正在加载采集内容...</div>}
-        {!isLoading && items.map((item) => (
+        {!isLoading && viewMode === 'x' && items.map((item) => (
+          <XStyleResultCard key={item.id} item={item} expanded={expandedId === item.id} onToggle={() => setExpandedId(expandedId === item.id ? null : item.id)} />
+        ))}
+        {!isLoading && viewMode === 'list' && items.map((item) => (
           <TaskResultRow key={item.id} item={item} expanded={expandedId === item.id} onToggle={() => setExpandedId(expandedId === item.id ? null : item.id)} />
         ))}
         {!isLoading && !items.length && showFallback && (
