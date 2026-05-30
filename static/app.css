@@ -245,6 +245,35 @@ button:disabled {
   margin-bottom: 14px;
 }
 
+.advanced-section summary {
+  cursor: pointer;
+  color: var(--text);
+  font-size: 1.1rem;
+  font-weight: 700;
+  list-style: none;
+}
+
+.advanced-section summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-section summary::before {
+  content: "›";
+  display: inline-block;
+  margin-right: 8px;
+  color: var(--primary-dark);
+  transform: rotate(0deg);
+  transition: transform 0.16s ease;
+}
+
+.advanced-section[open] summary {
+  margin-bottom: 18px;
+}
+
+.advanced-section[open] summary::before {
+  transform: rotate(90deg);
+}
+
 input, select, textarea {
   width: 100%;
   min-height: 40px;

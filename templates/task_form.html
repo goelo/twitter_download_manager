@@ -54,8 +54,8 @@
     </label>
   </section>
 
-  <section class="panel form-section">
-    <h2>用户媒体</h2>
+  <details class="panel form-section advanced-section">
+    <summary>用户媒体高级设置</summary>
     <div class="checks">
       <label><input type="checkbox" name="has_video" checked> 下载视频</label>
       <label><input type="checkbox" name="has_retweet"> 包含转推</label>
@@ -81,10 +81,10 @@
       代理
       <input name="proxy" placeholder="gate.kookeey.info:1000:user:pass">
     </label>
-  </section>
+  </details>
 
-  <section class="panel form-section">
-    <h2>搜索 / Tag</h2>
+  <details class="panel form-section advanced-section">
+    <summary>搜索 / Tag 高级设置</summary>
     <label>
       Tag
       <input name="tag" placeholder="#example">
@@ -101,10 +101,10 @@
       <label><input type="checkbox" name="media_latest"> 最新页媒体</label>
       <label><input type="checkbox" name="text_down"> 文本模式</label>
     </div>
-  </section>
+  </details>
 
-  <section class="panel form-section">
-    <h2>评论区</h2>
+  <details class="panel form-section advanced-section">
+    <summary>评论区高级设置</summary>
     <div class="checks">
       <label><input type="checkbox" name="media_down" checked> 下载评论媒体</label>
     </div>
@@ -124,7 +124,7 @@
       评论高级搜索
       <textarea name="search_advanced" rows="3"></textarea>
     </label>
-  </section>
+  </details>
 
   <div class="form-actions">
     <button type="submit" class="primary" {% if not accounts %}disabled{% endif %}>提交任务</button>

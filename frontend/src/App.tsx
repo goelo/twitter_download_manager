@@ -4683,16 +4683,6 @@ function RunControlPage() {
             <Field label="保存路径"><Input value={form.save_path} onChange={(e) => setForm((prev) => ({ ...prev, save_path: e.target.value }))} /></Field>
             <Field label="用户名列表"><Textarea rows={3} value={form.user_lst} onChange={(e) => setForm((prev) => ({ ...prev, user_lst: e.target.value }))} /></Field>
             <Field label="Cookie"><Textarea rows={3} value={form.cookie} onChange={(e) => setForm((prev) => ({ ...prev, cookie: e.target.value }))} /></Field>
-            <Field label="代理池">
-              <SelectMenu
-                value={form.proxy_id ? String(form.proxy_id) : ''}
-                onValueChange={(value) => setForm((prev) => ({ ...prev, proxy_id: value ? Number(value) : null }))}
-                options={[
-                  { value: '', label: '使用手填代理' },
-                  ...usableProxies.map((proxy) => ({ value: String(proxy.id), label: proxy.label })),
-                ]}
-              />
-            </Field>
             <div className="grid gap-2 text-sm font-medium">
               <span>时间范围</span>
               <TimeRangePicker
@@ -4703,15 +4693,75 @@ function RunControlPage() {
                 onCustomChange={applyCustomTimeRange}
               />
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Check label="包含转推" checked={form.has_retweet} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, has_retweet: checked }))} />
-              <Check label="亮点" checked={form.high_lights} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, high_lights: checked }))} />
-              <Check label="Likes" checked={form.likes} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, likes: checked }))} />
-              <Check label="去重日志" checked={form.down_log} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, down_log: checked }))} />
-              <Check label="自动同步" checked={form.autoSync} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, autoSync: checked }))} />
-              <Check label="视频下载" checked={form.has_video} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, has_video: checked }))} />
-              <Check label="输出 Markdown" checked={form.md_output} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, md_output: checked }))} />
-            </div>
+            <Button variant="secondary" onClick={() => setShowAdvanced((value) => !value)}>
+              {showAdvanced ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              {showAdvanced ? '收起高级设置' : '高级设置'}
+            </Button>
+            {showAdvanced && (
+              <div className="space-y-4 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-3">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Check label="包含转推" checked={form.has_retweet} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, has_retweet: checked }))} />
+                  <Check label="亮点" checked={form.high_lights} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, high_lights: checked }))} />
+                  <Check label="Likes" checked={form.likes} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, likes: checked }))} />
+                  <Check label="去重日志" checked={form.down_log} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, down_log: checked }))} />
+                  <Check label="自动同步" checked={form.autoSync} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, autoSync: checked }))} />
+                  <Check label="视频下载" checked={form.has_video} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, has_video: checked }))} />
+                  <Check label="输出 Markdown" checked={form.md_output} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, md_output: checked }))} />
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field label="图片格式">
+                    <SelectMenu
+                      value={form.image_format}
+                      onValueChange={(value) => setForm((prev) => ({ ...prev, image_format: value }))}
+                      options={[
+                        { value: 'orig', label: 'orig' },
+                        { value: 'jpg', label: 'jpg' },
+                        { value: 'png', label: 'png' },
+                      ]}
+                    />
+                  </Field>
+                  <Field label="单个 Markdown 媒体数量">
+                    <Input type="number" value={form.media_count_limit} onChange={(e) => setForm((prev) => ({ ...prev, media_count_limit: Number(e.target.value) }))} />
+                  </Field>
+                </div>
+                <Field label="代理模式">
+                  <SelectMenu
+                    value={proxyMode}
+                    onValueChange={(value) => {
+                      const nextMode = value as ProxyMode;
+                      setProxyMode(nextMode);
+                      setForm((prev) => ({
+                        ...prev,
+                        proxy_id: nextMode === 'pool' ? prev.proxy_id : null,
+                        proxy: nextMode === 'manual' ? prev.proxy : '',
+                      }));
+                    }}
+                    options={[
+                      { value: 'auto', label: '自动分配或不使用代理' },
+                      { value: 'pool', label: '从代理池选择' },
+                      { value: 'manual', label: '手填代理' },
+                    ]}
+                  />
+                </Field>
+                {proxyMode === 'pool' && (
+                  <Field label="代理池">
+                    <SelectMenu
+                      value={form.proxy_id ? String(form.proxy_id) : ''}
+                      onValueChange={(value) => setForm((prev) => ({ ...prev, proxy_id: value ? Number(value) : null }))}
+                      options={[
+                        { value: '', label: '自动分配可用代理' },
+                        ...usableProxies.map((proxy) => ({ value: String(proxy.id), label: proxy.label })),
+                      ]}
+                    />
+                  </Field>
+                )}
+                {proxyMode === 'manual' && (
+                  <Field label="手填代理">
+                    <Input value={form.proxy} onChange={(e) => setForm((prev) => ({ ...prev, proxy: e.target.value }))} placeholder={PROXY_PLACEHOLDER} />
+                  </Field>
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
         <Card>
