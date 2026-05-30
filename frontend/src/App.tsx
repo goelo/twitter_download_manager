@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronDown, ChevronRight, CircleUserRound, ClipboardList, Clock3, Database, Eye, ExternalLink, FileArchive, FolderKanban, Image, Info, Link2, LogOut, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCcw, Search, ShieldCheck, Play, Square, Target, TrendingUp, Video, X, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronDown, ChevronRight, CircleUserRound, ClipboardList, Clock3, Database, Edit3, Eye, ExternalLink, FileArchive, FolderKanban, Image, Info, Link2, LogOut, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCcw, Search, ShieldCheck, Play, Save, Square, Target, TrendingUp, Video, X, Zap } from 'lucide-react';
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from './lib/api';
 import { Badge } from './components/ui/badge';
@@ -237,6 +237,15 @@ function accountUsabilityDescription(account: Account) {
   return statusDescription(account.status) || '当前不会自动分配任务。';
 }
 
+function accountQuotaSummary(account: Account) {
+  if (!account.capacity) return '-';
+  return `API ${account.capacity.api_remaining_estimate}/${account.capacity.api_budget_24h} · 任务 ${account.capacity.task_remaining_24h}/${account.capacity.task_limit_24h}`;
+}
+
+function accountErrorSummary(account: Account) {
+  return account.last_error || account.capacity?.reason || accountUsabilityDescription(account) || '-';
+}
+
 function localLoginHelperUnavailableMessage(helper: LocalBrowserLoginHelperStatus) {
   if (helper.status === 'unsupported' || helper.auto_start_supported === false) {
     return helper.message || '当前 Web 后端不在 Windows 本机，浏览器不能直接启动这台电脑上的 start_local_login_helper.bat。';
@@ -342,13 +351,13 @@ function Shell({ children }: { children: React.ReactNode }) {
 
         <div className="min-w-0 flex-1">
           <header className="sticky top-0 z-20 border-b border-[hsl(var(--line))] bg-[rgba(9,18,33,0.86)] backdrop-blur lg:hidden">
-            <div className="mx-auto flex min-h-16 max-w-[1440px] items-center gap-3 px-4 py-3">
+            <div className="flex min-h-16 w-full items-center gap-3 px-4 py-3 sm:px-5 2xl:px-8">
               <Button variant="ghost" size="sm" className="h-10 w-10 px-0 lg:hidden" aria-label="打开导航菜单" onClick={() => setMobileNavOpen(true)}>
                 <Menu className="h-4 w-4" />
               </Button>
             </div>
           </header>
-          <main className="mx-auto max-w-[1440px] px-4 py-5">{children}</main>
+          <main className="w-full px-4 py-5 sm:px-5 2xl:px-8">{children}</main>
         </div>
       </div>
     </div>
@@ -1713,7 +1722,7 @@ function TaskFormPage() {
               </select>
             </Field>
           </div>
-          <div className="grid gap-3 md:grid-cols-3">
+          <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr))]">
             <Check label="推文文本" checked={true} disabled onCheckedChange={() => undefined} />
             <Check label="图片" checked={true} disabled onCheckedChange={() => undefined} />
             <Check label="视频" checked={form.has_video} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, has_video: checked }))} />
@@ -2617,7 +2626,7 @@ function SchedulesPage() {
           <Field label="目标博主 / 博主列表">
             <Textarea rows={3} value={form.targets} onChange={(e) => setForm((prev) => ({ ...prev, targets: e.target.value }))} placeholder="每行一个用户名或主页链接" />
           </Field>
-          <div className="grid gap-3 md:grid-cols-4">
+          <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr))]">
             <Field label="执行周期">
               <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.schedule_type} onChange={(e) => setForm((prev) => ({ ...prev, schedule_type: e.target.value as ScheduleFormValues['schedule_type'] }))}>
                 <option value="daily">每日</option>
@@ -2633,12 +2642,12 @@ function SchedulesPage() {
               {WEEKDAYS.map((day) => <Check key={day.value} label={day.label} checked={form.weekdays.includes(day.value)} onCheckedChange={() => toggleWeekday(day.value)} />)}
             </div>
           )}
-          <div className="grid gap-3 md:grid-cols-3">
+          <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr))]">
             <Check label="下载视频" checked={form.has_video} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, has_video: checked }))} />
             <Check label="去重日志" checked={form.down_log} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, down_log: checked }))} />
             <Check label="输出 Markdown" checked={form.md_output} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, md_output: checked }))} />
           </div>
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr))]">
             <Field label="代理池">
               <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.proxy_id ?? ''} onChange={(e) => setForm((prev) => ({ ...prev, proxy_id: e.target.value ? Number(e.target.value) : null }))}>
                 <option value="">不使用代理池</option>
@@ -2651,7 +2660,7 @@ function SchedulesPage() {
             服务器时区：{form.timezone || 'local'} · 错过执行默认跳过 · 连续失败 3 次自动停用
           </div>
           {health?.resource_policy && (
-            <div className="grid gap-2 md:grid-cols-3">
+            <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr))]">
               <InfoCard title="新号每日上限" value={String(health.resource_policy.account_new_task_limit_24h)} />
               <InfoCard title="稳定号每日上限" value={String(health.resource_policy.account_stable_task_limit_24h)} />
               <InfoCard title="限流冷却" value={`${Math.round(health.resource_policy.account_rate_limit_cooldown_seconds / 3600)}h`} />
@@ -2917,9 +2926,13 @@ function AccountsPage() {
   const [browserLoginToken, setBrowserLoginToken] = useState('');
   const [browserLoginStatus, setBrowserLoginStatus] = useState('');
   const [browserLoginMessage, setBrowserLoginMessage] = useState('');
+  const [browserLoginLabel, setBrowserLoginLabel] = useState('');
   const [loginQueueText, setLoginQueueText] = useState('');
   const [loginQueuePreview, setLoginQueuePreview] = useState<LoginQueueParseResponse | null>(null);
   const [queueHelperError, setQueueHelperError] = useState('');
+  const [expandedAccountId, setExpandedAccountId] = useState<number | null>(null);
+  const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
+  const [editingAccountLabel, setEditingAccountLabel] = useState('');
   const startedQueueTokenRef = useRef('');
   const addAccount = useMutation({
     mutationFn: () => api.addAccount(form),
@@ -2992,7 +3005,7 @@ function AccountsPage() {
           message: localLoginHelperUnavailableMessage(helper),
         };
       }
-      const session = await api.localBrowserLoginStart();
+      const session = await api.localBrowserLoginStart({ label: browserLoginLabel.trim() });
       try {
         const body = await openLocalHelperWindow(session);
         return {
@@ -3014,6 +3027,9 @@ function AccountsPage() {
       setBrowserLoginToken(res.token);
       setBrowserLoginStatus(res.status);
       setBrowserLoginMessage(res.message);
+      if (res.status === 'running') {
+        setBrowserLoginLabel('');
+      }
     },
     onError: (err: Error) => setError(err.message),
   });
@@ -3111,6 +3127,16 @@ function AccountsPage() {
     },
     onError: (err: Error) => setError(err.message),
   });
+  const updateAccount = useMutation({
+    mutationFn: ({ id, label }: { id: number; label: string }) => api.updateAccount(id, { label }),
+    onSuccess: () => {
+      setError('');
+      setEditingAccountId(null);
+      setEditingAccountLabel('');
+      queryClient.invalidateQueries({ queryKey: ['accounts'] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
 
   useEffect(() => {
     const status = browserLoginStatusQuery.data?.status;
@@ -3161,6 +3187,13 @@ function AccountsPage() {
         <p className="mt-1 text-sm text-[hsl(var(--muted))]">维护会话，任务从这里选账号。</p>
       </div>
       <ActionBar>
+        <Input
+          value={browserLoginLabel}
+          onChange={(event) => setBrowserLoginLabel(event.target.value)}
+          className="w-full sm:w-[260px]"
+          placeholder="本地登录账号名称"
+          maxLength={80}
+        />
         <Button onClick={() => browserLogin.mutate()} disabled={browserLogin.isPending}>
           <CircleUserRound className="h-4 w-4" />
           本地 Chrome 登录
