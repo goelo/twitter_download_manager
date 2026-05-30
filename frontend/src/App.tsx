@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronDown, ChevronRight, CircleUserRound, ClipboardList, Clock3, Database, Edit3, Eye, ExternalLink, FileArchive, FolderKanban, Heart, Image, Info, Layers3, LogOut, Menu, MessageCircle, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCcw, Repeat2, Search, ShieldCheck, Play, Save, Square, Target, TrendingUp, UserRoundCheck, Video, X, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronDown, ChevronRight, CircleUserRound, ClipboardList, Clock3, Database, Edit3, Eye, ExternalLink, FileArchive, FolderKanban, Heart, Image, Info, LogOut, Menu, MessageCircle, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCcw, Repeat2, Search, ShieldCheck, Play, Save, Square, Target, TrendingUp, UserRoundCheck, Video, X, Zap } from 'lucide-react';
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from './lib/api';
 import { Badge } from './components/ui/badge';
@@ -359,7 +359,14 @@ function accountWarmupSummary(account: Account) {
 function proxyStatusDescription(proxy: ProxyItem) {
   if (!proxy.enabled) return '当前代理不会参与运行。';
   if (proxy.status === 'check_failed') return '探测失败，系统会继续心跳检测，恢复后自动参与任务。';
+  if (proxy.quality?.reason) return proxy.quality.reason;
   return statusDescription(proxy.status) || '代理状态';
+}
+
+function proxyQualityPercent(proxy: ProxyItem) {
+  const score = typeof proxy.quality?.score === 'number' ? proxy.quality.score : proxy.health_score;
+  if (typeof score !== 'number') return '-';
+  return `${Math.round(Math.max(0, Math.min(score, 1)) * 100)}%`;
 }
 
 function riskLevelLabel(level?: string) {
@@ -618,6 +625,7 @@ function AuthenticatedApp() {
         <Route path="/tasks/:id" element={<TaskDetailRoute />} />
         <Route path="/tasks/:id/live" element={<TaskLiveView />} />
         <Route path="/schedules" element={<SchedulesPage />} />
+        <Route path="/bloggers" element={<BloggersPage />} />
         <Route path="/operation-logs" element={<OperationLogsPage />} />
         <Route path="/result-db" element={<ResultDbPage />} />
         <Route path="/accounts" element={<AccountsPage />} />
@@ -630,7 +638,58 @@ function AuthenticatedApp() {
 
 function ActionBar({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex flex-wrap items-center justify-end gap-2 rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,rgba(30,41,59,0.92)_0%,rgba(15,23,42,0.92)_100%)] px-4 py-3">
+    <div className="flex flex-wrap items-center justify-end gap-2 rounded-lg border border-[hsl(var(--line))] bg-[rgba(15,23,42,0.62)] px-3 py-2">
+      {children}
+    </div>
+  );
+}
+
+function PageHeader({ title, description, actions }: { title: string; description?: string; actions?: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+      <div className="min-w-0">
+        <h2 className="text-2xl font-semibold tracking-normal">{title}</h2>
+        {description && <p className="mt-1 max-w-3xl text-sm leading-6 text-[hsl(var(--muted))]">{description}</p>}
+      </div>
+      {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
+    </div>
+  );
+}
+
+function FilterBar({ children }: { children: React.ReactNode }) {
+  return <div className="grid gap-2 rounded-lg border border-[hsl(var(--line))] bg-[rgba(15,23,42,0.62)] p-3 md:flex md:flex-wrap md:items-center">{children}</div>;
+}
+
+function TableShell({ children, minWidth = 960 }: { children: React.ReactNode; minWidth?: number }) {
+  return (
+    <div className="overflow-auto">
+      <table className="w-full border-collapse text-sm" style={{ minWidth }}>
+        {children}
+      </table>
+    </div>
+  );
+}
+
+function EmptyState({ title, description, icon }: { title: string; description?: string; icon?: React.ReactNode }) {
+  return (
+    <div className="flex min-h-36 flex-col items-center justify-center rounded-lg border border-dashed border-[hsl(var(--line))] bg-[rgba(15,23,42,0.4)] px-4 py-8 text-center">
+      {icon && <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-md bg-[rgba(14,165,233,0.12)] text-[hsl(var(--primary-dark))]">{icon}</div>}
+      <div className="font-semibold">{title}</div>
+      {description && <div className="mt-1 max-w-md text-sm text-[hsl(var(--muted))]">{description}</div>}
+    </div>
+  );
+}
+
+function AlertBanner({ tone = 'neutral', children }: { tone?: BadgeTone; children: React.ReactNode }) {
+  return (
+    <div className={cn(
+      'rounded-lg border px-3 py-2 text-sm',
+      tone === 'danger' && 'border-[rgba(248,113,113,0.36)] bg-[rgba(248,113,113,0.12)] text-[hsl(var(--danger))]',
+      tone === 'success' && 'border-[rgba(34,197,94,0.32)] bg-[rgba(34,197,94,0.12)] text-[hsl(var(--success))]',
+      tone === 'warning' && 'border-[rgba(251,191,36,0.32)] bg-[rgba(251,191,36,0.12)] text-[hsl(var(--warning))]',
+      tone === 'primary' && 'border-[rgba(14,165,233,0.32)] bg-[rgba(14,165,233,0.1)] text-[hsl(var(--primary-dark))]',
+      tone === 'neutral' && 'border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] text-[hsl(var(--muted))]',
+    )}>
       {children}
     </div>
   );
@@ -1317,20 +1376,22 @@ function TaskListPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-2xl font-semibold">任务</h2>
-        <p className="mt-1 text-sm text-[hsl(var(--muted))]">排队、运行、完成、失败都在这里看。</p>
-      </div>
-      <ActionBar>
-        <Button variant="secondary" onClick={() => queryClient.invalidateQueries({ queryKey: ['tasks'] })}>
-          <RefreshCcw className="h-4 w-4" />
-          刷新
-        </Button>
-        <Button onClick={() => (window.location.href = '/tasks/new')}>
-          <Plus className="h-4 w-4" />
-          新建任务
-        </Button>
-      </ActionBar>
+      <PageHeader
+        title="任务"
+        description="排队、运行、完成、失败都在这里看。"
+        actions={(
+          <>
+            <Button variant="secondary" onClick={() => queryClient.invalidateQueries({ queryKey: ['tasks'] })}>
+              <RefreshCcw className="h-4 w-4" />
+              刷新
+            </Button>
+            <Button onClick={() => (window.location.href = '/tasks/new')}>
+              <Plus className="h-4 w-4" />
+              新建任务
+            </Button>
+          </>
+        )}
+      />
 
       <div className="grid gap-3 md:grid-cols-4">
         <Metric title="总任务" value={stats.total} />
@@ -1341,30 +1402,28 @@ function TaskListPage() {
 
       <Card>
         <CardContent className="p-0">
-          <div className="overflow-auto">
-            <table className="w-full min-w-[1000px] border-collapse text-sm">
-              <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
+          <TableShell minWidth={1000}>
+            <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
+              <tr>
+                <th className="px-4 py-3">ID</th>
+                <th className="px-4 py-3">标题</th>
+                <th className="px-4 py-3">状态</th>
+                <th className="px-4 py-3">提交人</th>
+                <th className="px-4 py-3">创建时间</th>
+                <th className="px-4 py-3"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {tasks.map((task) => <TaskRow key={task.id} task={task} onDelete={handleDeleteTask} deleting={deleteTask.isPending} />)}
+              {!isLoading && tasks.length === 0 && (
                 <tr>
-                  <th className="px-4 py-3">ID</th>
-                  <th className="px-4 py-3">标题</th>
-                  <th className="px-4 py-3">状态</th>
-                  <th className="px-4 py-3">提交人</th>
-                  <th className="px-4 py-3">创建时间</th>
-                  <th className="px-4 py-3"></th>
+                  <td className="px-4 py-6" colSpan={6}>
+                    <EmptyState title="暂无任务" description="创建一个任务后，运行状态和产出会显示在这里。" icon={<FolderKanban className="h-5 w-5" />} />
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {tasks.map((task) => <TaskRow key={task.id} task={task} onDelete={handleDeleteTask} deleting={deleteTask.isPending} />)}
-                {!isLoading && tasks.length === 0 && (
-                  <tr>
-                    <td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={6}>
-                      暂无任务
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+              )}
+            </tbody>
+          </TableShell>
         </CardContent>
       </Card>
     </div>
@@ -1390,6 +1449,289 @@ function InfoCard({ title, value }: { title: string; value: string }) {
         <div className="mt-2 break-words text-base font-semibold tabular-nums">{value}</div>
       </CardContent>
     </Card>
+  );
+}
+
+type CircularStatTone = 'sky' | 'emerald' | 'amber' | 'rose' | 'violet' | 'slate';
+
+const circularStatToneClass: Record<CircularStatTone, { border: string; bg: string; icon: string; text: string; stroke: string; track: string }> = {
+  sky: {
+    border: 'border-[rgba(56,189,248,0.34)]',
+    bg: 'bg-[rgba(14,165,233,0.10)]',
+    icon: 'text-sky-300',
+    text: 'text-sky-100',
+    stroke: '#38bdf8',
+    track: 'rgba(56,189,248,0.16)',
+  },
+  emerald: {
+    border: 'border-[rgba(52,211,153,0.34)]',
+    bg: 'bg-[rgba(16,185,129,0.10)]',
+    icon: 'text-emerald-300',
+    text: 'text-emerald-100',
+    stroke: '#34d399',
+    track: 'rgba(52,211,153,0.16)',
+  },
+  amber: {
+    border: 'border-[rgba(251,191,36,0.34)]',
+    bg: 'bg-[rgba(245,158,11,0.10)]',
+    icon: 'text-amber-300',
+    text: 'text-amber-100',
+    stroke: '#fbbf24',
+    track: 'rgba(251,191,36,0.16)',
+  },
+  rose: {
+    border: 'border-[rgba(251,113,133,0.36)]',
+    bg: 'bg-[rgba(244,63,94,0.10)]',
+    icon: 'text-rose-300',
+    text: 'text-rose-100',
+    stroke: '#fb7185',
+    track: 'rgba(251,113,133,0.16)',
+  },
+  violet: {
+    border: 'border-[rgba(167,139,250,0.34)]',
+    bg: 'bg-[rgba(139,92,246,0.10)]',
+    icon: 'text-violet-300',
+    text: 'text-violet-100',
+    stroke: '#a78bfa',
+    track: 'rgba(167,139,250,0.16)',
+  },
+  slate: {
+    border: 'border-[rgba(148,163,184,0.28)]',
+    bg: 'bg-[rgba(148,163,184,0.08)]',
+    icon: 'text-slate-300',
+    text: 'text-slate-100',
+    stroke: '#94a3b8',
+    track: 'rgba(148,163,184,0.14)',
+  },
+};
+
+function clampPercent(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, value));
+}
+
+function taskProgressValues(task: Task) {
+  const total = task.progress?.total ?? task.progress_total ?? 0;
+  const done = task.progress?.done ?? task.progress_done ?? 0;
+  if (total > 0) {
+    return {
+      total,
+      done,
+      percent: clampPercent((done / total) * 100),
+      label: `${done}/${total}`,
+    };
+  }
+  const terminalPercent = task.status === 'completed' || task.status === 'finished' ? 100 : 0;
+  return {
+    total,
+    done,
+    percent: terminalPercent,
+    label: terminalPercent ? '已完成' : statusDescription(task.status) || '-',
+  };
+}
+
+function taskRuntimeLabel(task: Task, nowMs: number) {
+  const started = task.started_at ? parseAppTime(task.started_at) : null;
+  const finished = task.finished_at ? parseAppTime(task.finished_at) : null;
+  if (!started) return '尚未开始';
+  const endMs = finished?.getTime() ?? nowMs;
+  const seconds = Math.max(0, Math.floor((endMs - started.getTime()) / 1000));
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const remainMinutes = minutes % 60;
+  if (hours < 24) return remainMinutes ? `${hours} 小时 ${remainMinutes} 分钟` : `${hours} 小时`;
+  const days = Math.floor(hours / 24);
+  const remainHours = hours % 24;
+  return remainHours ? `${days} 天 ${remainHours} 小时` : `${days} 天`;
+}
+
+function circularPercentFromValue(value: number, baseline: number) {
+  if (value <= 0) return 0;
+  return clampPercent((value / Math.max(value, baseline)) * 100);
+}
+
+function CircularStat({
+  icon: Icon,
+  label,
+  value,
+  detail,
+  percent,
+  tone = 'sky',
+}: {
+  icon: typeof Activity;
+  label: string;
+  value: string;
+  detail: string;
+  percent: number;
+  tone?: CircularStatTone;
+}) {
+  const toneClass = circularStatToneClass[tone];
+  const safePercent = clampPercent(percent);
+
+  return (
+    <div className={cn('min-h-[132px] rounded-lg border px-4 py-4', toneClass.border, toneClass.bg)}>
+      <div className="flex items-center gap-4">
+        <div className="relative h-[76px] w-[76px] shrink-0" aria-hidden="true">
+          <svg className="h-[76px] w-[76px]" viewBox="0 0 76 76">
+            <circle cx="38" cy="38" r="30" fill="none" stroke={toneClass.track} strokeWidth="8" />
+            <circle
+              cx="38"
+              cy="38"
+              r="30"
+              fill="none"
+              pathLength="100"
+              stroke={toneClass.stroke}
+              strokeDasharray={`${safePercent} ${100 - safePercent}`}
+              strokeLinecap="round"
+              strokeWidth="8"
+              transform="rotate(-90 38 38)"
+            />
+          </svg>
+          <div className={cn('absolute inset-0 flex items-center justify-center', toneClass.icon)}>
+            <Icon className="h-6 w-6" />
+          </div>
+        </div>
+        <div className="min-w-0">
+          <div className="text-sm text-[hsl(var(--muted))]">{label}</div>
+          <div className={cn('mt-1 truncate text-2xl font-semibold leading-tight', toneClass.text)}>{value}</div>
+          <div className="mt-1 line-clamp-2 text-xs leading-5 text-[hsl(var(--muted))]">{detail}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TaskHeroPanel({ task, nowMs, children }: { task: Task; nowMs: number; children: React.ReactNode }) {
+  const progress = taskProgressValues(task);
+  const statusDetail = statusDescription(task.status) || '任务状态';
+  const runtime = taskRuntimeLabel(task, nowMs);
+
+  return (
+    <Card className="border-[rgba(56,189,248,0.22)]">
+      <CardContent className="p-0">
+        <div className="grid gap-4 p-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,auto)]">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={statusTone(task.status)}>{statusLabel(task.status)}</Badge>
+              <span className="text-xs text-[hsl(var(--muted))]">任务 #{task.id}</span>
+            </div>
+            <h2 className="mt-3 break-words text-2xl font-semibold leading-tight">{displayTaskTitle(task)}</h2>
+            <p className="mt-2 text-sm leading-6 text-[hsl(var(--muted))]">
+              {task.username || '-'} · 创建于 {task.created_at} · {statusDetail}
+            </p>
+            <div className="mt-4 grid gap-2 sm:grid-cols-3">
+              <div className="rounded-lg border border-[rgba(56,189,248,0.22)] bg-[rgba(14,165,233,0.08)] px-3 py-2">
+                <div className="text-xs text-[hsl(var(--muted))]">进度</div>
+                <div className="mt-1 font-semibold text-sky-100">{Math.round(progress.percent)}% · {progress.label}</div>
+              </div>
+              <div className="rounded-lg border border-[rgba(52,211,153,0.22)] bg-[rgba(16,185,129,0.08)] px-3 py-2">
+                <div className="text-xs text-[hsl(var(--muted))]">运行时长</div>
+                <div className="mt-1 font-semibold text-emerald-100">{runtime}</div>
+              </div>
+              <div className="rounded-lg border border-[rgba(251,191,36,0.24)] bg-[rgba(245,158,11,0.08)] px-3 py-2">
+                <div className="text-xs text-[hsl(var(--muted))]">时间</div>
+                <div className="mt-1 truncate font-semibold text-amber-100" title={task.started_at || task.created_at}>{task.started_at ? relativeTime(task.started_at, nowMs) : '等待开始'}</div>
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-col justify-between gap-3">
+            <ActionBar>{children}</ActionBar>
+            <div className="grid gap-2 text-xs text-[hsl(var(--muted))] sm:grid-cols-2">
+              <div className="rounded-lg border border-[hsl(var(--line))] bg-[rgba(15,23,42,0.42)] px-3 py-2">开始：{task.started_at || '-'}</div>
+              <div className="rounded-lg border border-[hsl(var(--line))] bg-[rgba(15,23,42,0.42)] px-3 py-2">结束：{task.finished_at || '-'}</div>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function TaskStatsGrid({ task }: { task: Task }) {
+  const summary = task.summary;
+  const progress = taskProgressValues(task);
+  const outputCount = task.task_type === 'profile' ? summary?.files ?? 0 : summary?.records ?? 0;
+  const mediaFiles = summary?.media_files ?? 0;
+  const mediaRecords = summary?.media_records ?? 0;
+  const interactions = (summary?.favorites ?? 0) + (summary?.retweets ?? 0) + (summary?.replies ?? 0);
+  const retryPercent = task.max_retries > 0 ? (task.retry_count / task.max_retries) * 100 : 0;
+
+  return (
+    <div className="grid gap-3 lg:grid-cols-3 2xl:grid-cols-6">
+      <CircularStat icon={Target} label="任务进度" value={`${Math.round(progress.percent)}%`} detail={progress.label} percent={progress.percent} tone="sky" />
+      <CircularStat
+        icon={Database}
+        label={task.task_type === 'profile' ? '资料文件' : '采集记录'}
+        value={outputCount.toLocaleString()}
+        detail={`CSV ${summary?.csv_files ?? 0} · 文件 ${summary?.files ?? 0}`}
+        percent={circularPercentFromValue(outputCount, 100)}
+        tone="emerald"
+      />
+      <CircularStat
+        icon={Image}
+        label="媒体产出"
+        value={mediaFiles.toLocaleString()}
+        detail={`媒体记录 ${mediaRecords.toLocaleString()}`}
+        percent={circularPercentFromValue(mediaFiles, Math.max(outputCount, 100))}
+        tone="violet"
+      />
+      <CircularStat
+        icon={Heart}
+        label="互动合计"
+        value={interactions.toLocaleString()}
+        detail={`赞 ${summary?.favorites ?? 0} · 转 ${summary?.retweets ?? 0} · 评 ${summary?.replies ?? 0}`}
+        percent={circularPercentFromValue(interactions, 1000)}
+        tone="rose"
+      />
+      <CircularStat
+        icon={FileArchive}
+        label="输出大小"
+        value={formatBytes(summary?.total_bytes ?? 0)}
+        detail={`${task.files?.length || 0} 个输出文件`}
+        percent={circularPercentFromValue(summary?.total_bytes ?? 0, 1024 * 1024 * 50)}
+        tone="amber"
+      />
+      <CircularStat
+        icon={Repeat2}
+        label="重试状态"
+        value={`${task.retry_count}/${task.max_retries}`}
+        detail={task.last_retry_at ? `最近 ${task.last_retry_at}` : '暂无重试'}
+        percent={retryPercent}
+        tone={task.retry_count > 0 ? 'amber' : 'slate'}
+      />
+    </div>
+  );
+}
+
+function TaskDiagnosticsPanel({ task }: { task: Task }) {
+  const hasError = Boolean(task.error || task.last_error_type);
+
+  return (
+    <div className="grid gap-3 md:grid-cols-3">
+      <div className={cn('rounded-lg border px-4 py-3', hasError ? 'border-[rgba(248,113,113,0.36)] bg-[rgba(248,113,113,0.10)]' : 'border-[rgba(52,211,153,0.28)] bg-[rgba(16,185,129,0.08)]')}>
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          {hasError ? <AlertTriangle className="h-4 w-4 text-[hsl(var(--danger))]" /> : <CheckCircle2 className="h-4 w-4 text-[hsl(var(--success))]" />}
+          异常状态
+        </div>
+        <div className="mt-2 line-clamp-2 text-sm text-[hsl(var(--muted))]">{task.error || '暂无错误'}</div>
+      </div>
+      <div className="rounded-lg border border-[rgba(251,191,36,0.28)] bg-[rgba(245,158,11,0.08)] px-4 py-3">
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <Repeat2 className="h-4 w-4 text-amber-300" />
+          重试记录
+        </div>
+        <div className="mt-2 text-sm text-[hsl(var(--muted))]">最后重试：{task.last_retry_at || '-'}</div>
+      </div>
+      <div className="rounded-lg border border-[rgba(56,189,248,0.26)] bg-[rgba(14,165,233,0.08)] px-4 py-3">
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <Info className="h-4 w-4 text-sky-300" />
+          错误类型
+        </div>
+        <div className="mt-2 text-sm text-[hsl(var(--muted))]">{task.last_error_type ? statusLabel(task.last_error_type) : '-'}</div>
+      </div>
+    </div>
   );
 }
 
@@ -1557,11 +1899,153 @@ function TaskRow({ task, onDelete, deleting }: { task: Task; onDelete: (id: numb
   );
 }
 
+function BloggerAvatar({ blogger, size = 'md' }: { blogger: Pick<TrackedBlogger, 'screen_name' | 'display_name' | 'avatar_url'>; size?: 'sm' | 'md' | 'lg' }) {
+  const sizeClass = size === 'sm' ? 'h-8 w-8 text-xs' : size === 'lg' ? 'h-12 w-12 text-base' : 'h-10 w-10 text-sm';
+  const label = (blogger.display_name || blogger.screen_name || '@').trim();
+  if (blogger.avatar_url) {
+    return <img src={blogger.avatar_url} alt={label} className={cn(sizeClass, 'shrink-0 rounded-full border border-[hsl(var(--line))] object-cover')} loading="lazy" referrerPolicy="no-referrer" />;
+  }
+  return (
+    <div className={cn(sizeClass, 'flex shrink-0 items-center justify-center rounded-full border border-[hsl(var(--line))] bg-[rgba(14,165,233,0.16)] font-semibold text-[hsl(var(--primary-dark))]')}>
+      {(blogger.screen_name || label || '@').replace(/^@/, '').slice(0, 1).toUpperCase() || '@'}
+    </div>
+  );
+}
+
+function BloggerCategoryBadge({ blogger }: { blogger: Pick<TrackedBlogger, 'category_name' | 'category_color'> }) {
+  if (!blogger.category_name) return <Badge tone="neutral">未分类</Badge>;
+  return (
+    <span className="inline-flex h-6 max-w-[160px] items-center gap-1 rounded-full border border-[hsl(var(--line))] px-2 text-xs text-[hsl(var(--text))]">
+      <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: blogger.category_color || '#38bdf8' }} />
+      <span className="truncate">{blogger.category_name}</span>
+    </span>
+  );
+}
+
+type BloggerLibrarySelectorProps = {
+  bloggers: TrackedBlogger[];
+  categories: BloggerCategory[];
+  targetLimits: Record<string, number>;
+  onTargetLimitsChange: (targetLimits: Record<string, number>) => void;
+  defaultLimit: number;
+  compact?: boolean;
+};
+
+function BloggerLibrarySelector({ bloggers, categories, targetLimits, onTargetLimitsChange, defaultLimit, compact = false }: BloggerLibrarySelectorProps) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [categoryId, setCategoryId] = useState('');
+  const selectedKeys = new Set(Object.keys(targetLimits || {}));
+  const selectedBloggers = bloggers.filter((blogger) => selectedKeys.has(blogger.screen_name.toLowerCase()));
+  const filteredBloggers = bloggers.filter((blogger) => {
+    const text = `${blogger.screen_name} ${blogger.display_name || ''}`.toLowerCase();
+    const categoryMatches = !categoryId || (categoryId === '0' ? !blogger.category_id : blogger.category_id === Number(categoryId));
+    return categoryMatches && (!query.trim() || text.includes(query.trim().toLowerCase()));
+  });
+  const selectedCount = selectedKeys.size;
+  const plannedCount = Object.values(targetLimits || {}).reduce((sum, value) => sum + Math.max(1, Number(value) || 1), 0);
+  const toggleBlogger = (blogger: TrackedBlogger) => {
+    const key = blogger.screen_name.toLowerCase();
+    const next = { ...(targetLimits || {}) };
+    if (Object.prototype.hasOwnProperty.call(next, key)) {
+      delete next[key];
+    } else {
+      next[key] = Math.max(1, Number(blogger.default_tweet_limit || defaultLimit || 10));
+    }
+    onTargetLimitsChange(next);
+  };
+  const updateLimit = (screenName: string, limit: number) => {
+    onTargetLimitsChange({ ...(targetLimits || {}), [screenName.toLowerCase()]: Math.max(1, Number(limit) || 1) });
+  };
+  const applyVisible = () => {
+    const next = { ...(targetLimits || {}) };
+    filteredBloggers.forEach((blogger) => {
+      next[blogger.screen_name.toLowerCase()] = Math.max(1, Number(blogger.default_tweet_limit || defaultLimit || 10));
+    });
+    onTargetLimitsChange(next);
+  };
+
+  return (
+    <div className="space-y-3 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-3">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="min-w-0">
+          <div className="font-semibold">博主库选择</div>
+          <div className="mt-1 text-xs text-[hsl(var(--muted))]">{selectedCount ? `已选 ${selectedCount} 个 / 计划采集 ${plannedCount} 条` : '从博主库按分类和关键词快速选择。'}</div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" size="sm" onClick={() => setOpen((value) => !value)}>
+            <Search className="h-4 w-4" />
+            {open ? '收起选择' : '选择博主'}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => onTargetLimitsChange({})} disabled={!selectedCount}>
+            <X className="h-4 w-4" />
+            清空
+          </Button>
+        </div>
+      </div>
+      {selectedBloggers.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {selectedBloggers.map((blogger) => (
+            <div key={blogger.id} className="inline-flex max-w-full items-center gap-2 rounded-full border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-2 py-1 text-sm">
+              <BloggerAvatar blogger={blogger} size="sm" />
+              <span className="max-w-[160px] truncate">@{blogger.screen_name}</span>
+              <Input className="h-8 w-20 rounded-full px-2 text-xs" type="number" min={1} value={targetLimits[blogger.screen_name.toLowerCase()]} onChange={(e) => updateLimit(blogger.screen_name, Number(e.target.value))} />
+              <button type="button" className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-soft))]" onClick={() => toggleBlogger(blogger)} aria-label="移除博主">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {open && (
+        <div className="space-y-3 rounded-lg border border-[hsl(var(--line))] bg-[rgba(15,23,42,0.58)] p-3">
+          <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_220px_auto]">
+            <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索用户名或昵称" />
+            <SelectMenu
+              value={categoryId}
+              onValueChange={setCategoryId}
+              options={[
+                { value: '', label: '全部分类' },
+                { value: '0', label: '未分类' },
+                ...categories.map((category) => ({ value: String(category.id), label: category.name })),
+              ]}
+            />
+            <Button variant="secondary" onClick={applyVisible} disabled={!filteredBloggers.length}>批量选择当前</Button>
+          </div>
+          <div className={cn('grid gap-2 overflow-auto', compact ? 'max-h-72' : 'max-h-96')}>
+            {filteredBloggers.map((blogger) => {
+              const selected = selectedKeys.has(blogger.screen_name.toLowerCase());
+              return (
+                <button
+                  key={blogger.id}
+                  type="button"
+                  onClick={() => toggleBlogger(blogger)}
+                  className={cn('flex min-w-0 cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors', selected ? 'border-[hsl(var(--primary))] bg-[rgba(14,165,233,0.14)]' : 'border-[hsl(var(--line))] bg-[hsl(var(--panel))] hover:bg-[hsl(var(--panel-soft))]')}
+                >
+                  <BloggerAvatar blogger={blogger} />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-medium">{blogger.display_name || `@${blogger.screen_name}`}</div>
+                    <div className="mt-1 truncate text-xs text-[hsl(var(--muted))]">@{blogger.screen_name} · 默认 {blogger.default_tweet_limit} 条 · 使用 {blogger.use_count} 次</div>
+                  </div>
+                  <BloggerCategoryBadge blogger={blogger} />
+                  {selected && <CheckCircle2 className="h-4 w-4 shrink-0 text-[hsl(var(--primary-dark))]" />}
+                </button>
+              );
+            })}
+            {!filteredBloggers.length && <div className="rounded-lg border border-[hsl(var(--line))] px-3 py-8 text-center text-sm text-[hsl(var(--muted))]">没有匹配的博主</div>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TaskFormPage() {
   const { data: accountData } = useQuery({ queryKey: ['accounts'], queryFn: () => api.accounts() });
   const { data: proxiesData } = useQuery({ queryKey: ['proxies'], queryFn: () => api.proxies() });
   const queryClient = useQueryClient();
   const { data: bloggersData } = useQuery({ queryKey: ['bloggers'], queryFn: () => api.bloggers() });
+  const { data: categoriesData } = useQuery({ queryKey: ['blogger-categories'], queryFn: () => api.bloggerCategories() });
   const [searchParams] = useSearchParams();
   const selectedTemplateId = searchParams.get('template');
   const accounts = accountData?.accounts;
@@ -1573,11 +2057,11 @@ function TaskFormPage() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [proxyMode, setProxyMode] = useState<ProxyMode>('auto');
   const [error, setError] = useState('');
-  const [bloggerForm, setBloggerForm] = useState({ screen_name: '', default_tweet_limit: 10 });
   const [showBatchLimit, setShowBatchLimit] = useState(false);
   const [batchLimit, setBatchLimit] = useState(10);
   const [savingDefaultLimits, setSavingDefaultLimits] = useState(false);
   const bloggers = bloggersData?.bloggers || [];
+  const bloggerCategories = categoriesData?.categories || [];
   const create = useMutation({
     mutationFn: () => {
       const nextError = timeRangeError(form.time_range);
@@ -1588,14 +2072,6 @@ function TaskFormPage() {
       return api.createTask(form);
     },
     onSuccess: (res) => (window.location.href = `/tasks/${res.task.id}`),
-    onError: (err: Error) => setError(err.message),
-  });
-  const addBlogger = useMutation({
-    mutationFn: () => api.addBlogger(bloggerForm),
-    onSuccess: async () => {
-      setBloggerForm({ screen_name: '', default_tweet_limit: 10 });
-      await queryClient.invalidateQueries({ queryKey: ['bloggers'] });
-    },
     onError: (err: Error) => setError(err.message),
   });
   const updateBlogger = useMutation({
@@ -1722,21 +2198,14 @@ function TaskFormPage() {
               placeholder="https://x.com/arsenal 或 @arsenal"
             />
           </Field>
+          <BloggerLibrarySelector
+            bloggers={bloggers}
+            categories={bloggerCategories}
+            targetLimits={form.target_limits || {}}
+            defaultLimit={form.tweet_limit}
+            onTargetLimitsChange={syncSelectedBloggers}
+          />
           <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))]">
-            <div className="flex flex-wrap items-end justify-between gap-3 border-b border-[hsl(var(--line))] px-4 py-3">
-              <div>
-                <div className="font-semibold">博主库</div>
-                <div className="mt-1 text-xs text-[hsl(var(--muted))]">选择历史博主，并为每个博主设置本次采集条数。</div>
-              </div>
-              <div className="grid gap-2 sm:grid-cols-[160px_100px_auto]">
-                <Input value={bloggerForm.screen_name} onChange={(e) => setBloggerForm((prev) => ({ ...prev, screen_name: e.target.value }))} placeholder="@username" />
-                <Input type="number" min={1} value={bloggerForm.default_tweet_limit} onChange={(e) => setBloggerForm((prev) => ({ ...prev, default_tweet_limit: Number(e.target.value) }))} />
-                <Button size="sm" onClick={() => addBlogger.mutate()} disabled={addBlogger.isPending || !bloggerForm.screen_name.trim()}>
-                  <Plus className="h-4 w-4" />
-                  添加
-                </Button>
-              </div>
-            </div>
             <div className="border-b border-[hsl(var(--line))] px-4 py-3">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                 <div>
@@ -1781,11 +2250,11 @@ function TaskFormPage() {
               )}
             </div>
             <div className="overflow-auto">
-              <table className="w-full min-w-[760px] border-collapse text-sm">
+              <table className="w-full min-w-[900px] border-collapse text-sm">
                 <thead className="text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
                   <tr>
-                    <th className="px-4 py-3">选择</th>
                     <th className="px-4 py-3">博主</th>
+                    <th className="px-4 py-3">分类</th>
                     <th className="px-4 py-3">本次条数</th>
                     <th className="px-4 py-3">默认条数</th>
                     <th className="px-4 py-3">最近使用</th>
@@ -1799,11 +2268,17 @@ function TaskFormPage() {
                     return (
                       <tr key={blogger.id} className="border-t border-[hsl(var(--line))]">
                         <td className="px-4 py-3">
-                          <input type="checkbox" checked={selected} onChange={(e) => toggleBlogger(blogger, e.target.checked)} />
+                          <div className="flex min-w-0 items-center gap-3">
+                            <input type="checkbox" checked={selected} onChange={(e) => toggleBlogger(blogger, e.target.checked)} />
+                            <BloggerAvatar blogger={blogger} />
+                            <div className="min-w-0">
+                              <div className="truncate font-medium">{blogger.display_name || `@${blogger.screen_name}`}</div>
+                              <div className="truncate text-xs text-[hsl(var(--muted))]">@{blogger.screen_name} · 使用 {blogger.use_count} 次</div>
+                            </div>
+                          </div>
                         </td>
                         <td className="px-4 py-3">
-                          <div className="font-medium">@{blogger.screen_name}</div>
-                          <div className="text-xs text-[hsl(var(--muted))]">使用 {blogger.use_count} 次</div>
+                          <BloggerCategoryBadge blogger={blogger} />
                         </td>
                         <td className="px-4 py-3">
                           <Input
@@ -1832,7 +2307,7 @@ function TaskFormPage() {
                     );
                   })}
                   {!bloggers.length && (
-                    <tr><td className="px-4 py-8 text-center text-[hsl(var(--muted))]" colSpan={6}>还没有博主记录；创建任务后会自动记录，也可以手动添加。</td></tr>
+                    <tr><td className="px-4 py-8 text-center text-[hsl(var(--muted))]" colSpan={6}>还没有博主记录；创建任务后会自动记录，也可以到博主管理页添加。</td></tr>
                   )}
                 </tbody>
               </table>
@@ -2071,24 +2546,289 @@ function Check({ label, checked, onCheckedChange, disabled = false }: { label: s
   );
 }
 
+function BloggersPage() {
+  const queryClient = useQueryClient();
+  const [query, setQuery] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [bloggerForm, setBloggerForm] = useState({ screen_name: '', default_tweet_limit: 10, category_id: '' });
+  const [bulkText, setBulkText] = useState('');
+  const [categoryForm, setCategoryForm] = useState({ name: '', color: '#38bdf8' });
+  const { data: bloggersData } = useQuery({ queryKey: ['bloggers', query, categoryFilter], queryFn: () => api.bloggers({ q: query, category_id: categoryFilter === '' ? undefined : Number(categoryFilter) }) });
+  const { data: categoriesData } = useQuery({ queryKey: ['blogger-categories'], queryFn: () => api.bloggerCategories() });
+  const bloggers = bloggersData?.bloggers || [];
+  const categories = categoriesData?.categories || [];
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ['bloggers'] });
+    queryClient.invalidateQueries({ queryKey: ['blogger-categories'] });
+  };
+  const addBlogger = useMutation({
+    mutationFn: () => api.addBlogger({
+      screen_name: bloggerForm.screen_name,
+      default_tweet_limit: bloggerForm.default_tweet_limit,
+      category_id: bloggerForm.category_id ? Number(bloggerForm.category_id) : null,
+    }),
+    onSuccess: () => {
+      setMessage('博主已添加，资料会自动补全。');
+      setError('');
+      setBloggerForm({ screen_name: '', default_tweet_limit: 10, category_id: bloggerForm.category_id });
+      invalidate();
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+  const bulkAdd = useMutation({
+    mutationFn: () => api.bulkAddBloggers({ text: bulkText, default_tweet_limit: bloggerForm.default_tweet_limit, category_id: bloggerForm.category_id ? Number(bloggerForm.category_id) : null }),
+    onSuccess: (res) => {
+      setMessage(`已导入 ${res.imported.length} 个，重复 ${res.duplicates.length} 个，跳过 ${res.skipped.length} 个。`);
+      setError('');
+      setBulkText('');
+      invalidate();
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+  const updateBlogger = useMutation({
+    mutationFn: ({ id, payload }: { id: number; payload: Partial<TrackedBlogger> }) => api.updateBlogger(id, payload),
+    onSuccess: () => invalidate(),
+    onError: (err: Error) => setError(err.message),
+  });
+  const deleteBlogger = useMutation({
+    mutationFn: (id: number) => api.deleteBlogger(id),
+    onSuccess: () => {
+      setMessage('博主已删除。');
+      invalidate();
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+  const refreshProfiles = useMutation({
+    mutationFn: (ids?: number[]) => api.refreshBloggerProfiles({ ids, limit: 80 }),
+    onSuccess: (res) => {
+      setMessage(`资料刷新完成：成功 ${res.refreshed} 个，失败 ${res.failed} 个。`);
+      setError('');
+      invalidate();
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+  const addCategory = useMutation({
+    mutationFn: () => api.addBloggerCategory(categoryForm),
+    onSuccess: () => {
+      setMessage('分类已添加。');
+      setCategoryForm({ name: '', color: '#38bdf8' });
+      invalidate();
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+  const updateCategory = useMutation({
+    mutationFn: ({ id, payload }: { id: number; payload: Partial<BloggerCategory> }) => api.updateBloggerCategory(id, payload),
+    onSuccess: () => invalidate(),
+    onError: (err: Error) => setError(err.message),
+  });
+  const deleteCategory = useMutation({
+    mutationFn: (id: number) => api.deleteBloggerCategory(id),
+    onSuccess: () => {
+      setMessage('分类已删除，相关博主已转为未分类。');
+      invalidate();
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  return (
+    <div className="space-y-4">
+      <PageHeader title="博主管理" description="维护博主头像、分类、默认采集条数，并用于任务和定时任务快速选择。" />
+      {error && <AlertBanner tone="danger">{error}</AlertBanner>}
+      {message && <AlertBanner tone="success">{message}</AlertBanner>}
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <Card>
+          <CardHeader>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h3 className="font-semibold">博主库</h3>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="secondary" size="sm" onClick={() => refreshProfiles.mutate(undefined)} disabled={refreshProfiles.isPending || !bloggers.length}>
+                  <RefreshCcw className="h-4 w-4" />
+                  刷新头像
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <FilterBar>
+              <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索用户名或昵称" />
+              <SelectMenu
+                value={categoryFilter}
+                onValueChange={setCategoryFilter}
+                options={[
+                  { value: '', label: '全部分类' },
+                  { value: '0', label: '未分类' },
+                  ...categories.map((category) => ({ value: String(category.id), label: category.name })),
+                ]}
+              />
+            </FilterBar>
+            <div className="rounded-lg border border-[hsl(var(--line))]">
+              <TableShell minWidth={980}>
+                <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
+                  <tr>
+                    <th className="px-4 py-3">博主</th>
+                    <th className="px-4 py-3">分类</th>
+                    <th className="px-4 py-3">默认条数</th>
+                    <th className="px-4 py-3">使用</th>
+                    <th className="px-4 py-3">资料刷新</th>
+                    <th className="px-4 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bloggers.map((blogger) => (
+                    <tr key={blogger.id} className="border-t border-[hsl(var(--line))]">
+                      <td className="px-4 py-3">
+                        <div className="flex min-w-0 items-center gap-3">
+                          <BloggerAvatar blogger={blogger} />
+                          <div className="min-w-0">
+                            <Input
+                              key={`${blogger.id}-name-${blogger.display_name || ''}`}
+                              className="h-8 max-w-[220px]"
+                              defaultValue={blogger.display_name || ''}
+                              placeholder={blogger.screen_name}
+                              onBlur={(e) => {
+                                if (e.target.value !== (blogger.display_name || '')) updateBlogger.mutate({ id: blogger.id, payload: { display_name: e.target.value } });
+                              }}
+                            />
+                            <div className="mt-1 truncate text-xs text-[hsl(var(--muted))]">@{blogger.screen_name}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <SelectMenu
+                          value={blogger.category_id ? String(blogger.category_id) : ''}
+                          onValueChange={(value) => updateBlogger.mutate({ id: blogger.id, payload: { category_id: value ? Number(value) : null } })}
+                          triggerClassName="h-9 min-w-[160px]"
+                          options={[
+                            { value: '', label: '未分类' },
+                            ...categories.map((category) => ({ value: String(category.id), label: category.name })),
+                          ]}
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <Input
+                          key={`${blogger.id}-limit-${blogger.default_tweet_limit}`}
+                          className="h-9 w-24"
+                          type="number"
+                          min={1}
+                          defaultValue={blogger.default_tweet_limit}
+                          onBlur={(e) => {
+                            const nextLimit = Math.max(1, Number(e.target.value) || 1);
+                            if (nextLimit !== blogger.default_tweet_limit) updateBlogger.mutate({ id: blogger.id, payload: { default_tweet_limit: nextLimit } });
+                          }}
+                        />
+                      </td>
+                      <td className="px-4 py-3 text-[hsl(var(--muted))]">{blogger.use_count} 次<br />{blogger.last_used_at || '-'}</td>
+                      <td className="px-4 py-3 text-[hsl(var(--muted))]">{blogger.profile_updated_at || '-'}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex justify-end gap-2">
+                          <Button variant="secondary" size="sm" onClick={() => refreshProfiles.mutate([blogger.id])} disabled={refreshProfiles.isPending}>刷新</Button>
+                          <Button variant="danger" size="sm" onClick={() => deleteBlogger.mutate(blogger.id)} disabled={deleteBlogger.isPending}>删除</Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {!bloggers.length && <tr><td className="px-4 py-6" colSpan={6}><EmptyState title="还没有博主" description="可以从右侧添加或批量导入博主。" icon={<UserRoundCheck className="h-5 w-5" />} /></td></tr>}
+                </tbody>
+              </TableShell>
+            </div>
+          </CardContent>
+        </Card>
+        <div className="space-y-4">
+          <Card>
+            <CardHeader><h3 className="font-semibold">添加 / 导入</h3></CardHeader>
+            <CardContent className="space-y-3">
+              <Field label="默认分类">
+                <SelectMenu
+                  value={bloggerForm.category_id}
+                  onValueChange={(value) => setBloggerForm((prev) => ({ ...prev, category_id: value }))}
+                  options={[{ value: '', label: '未分类' }, ...categories.map((category) => ({ value: String(category.id), label: category.name }))]}
+                />
+              </Field>
+              <Field label="单个博主">
+                <Input value={bloggerForm.screen_name} onChange={(e) => setBloggerForm((prev) => ({ ...prev, screen_name: e.target.value }))} placeholder="@username 或主页链接" />
+              </Field>
+              <Field label="默认条数">
+                <Input type="number" min={1} value={bloggerForm.default_tweet_limit} onChange={(e) => setBloggerForm((prev) => ({ ...prev, default_tweet_limit: Number(e.target.value) }))} />
+              </Field>
+              <Button onClick={() => addBlogger.mutate()} loading={addBlogger.isPending} disabled={!bloggerForm.screen_name.trim()}>
+                <Plus className="h-4 w-4" />
+                添加博主
+              </Button>
+              <Field label="批量导入">
+                <Textarea rows={6} value={bulkText} onChange={(e) => setBulkText(e.target.value)} placeholder="@username、username 或 https://x.com/username，每行一个" />
+              </Field>
+              <Button variant="secondary" onClick={() => bulkAdd.mutate()} loading={bulkAdd.isPending} disabled={!bulkText.trim()}>
+                <Plus className="h-4 w-4" />
+                批量导入
+              </Button>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader><h3 className="font-semibold">分类</h3></CardHeader>
+            <CardContent className="space-y-3">
+              <div className="grid gap-2 [grid-template-columns:minmax(0,1fr)_92px_auto]">
+                <Input value={categoryForm.name} onChange={(e) => setCategoryForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="分类名称" />
+                <Input type="color" value={categoryForm.color} onChange={(e) => setCategoryForm((prev) => ({ ...prev, color: e.target.value }))} />
+                <Button size="sm" onClick={() => addCategory.mutate()} disabled={addCategory.isPending || !categoryForm.name.trim()}>添加</Button>
+              </div>
+              <div className="space-y-2">
+                {categories.map((category) => (
+                  <div key={category.id} className="grid gap-2 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-2 [grid-template-columns:minmax(0,1fr)_72px_auto]">
+                    <Input
+                      key={`${category.id}-name-${category.name}`}
+                      className="h-8"
+                      defaultValue={category.name}
+                      onBlur={(e) => {
+                        if (e.target.value !== category.name) updateCategory.mutate({ id: category.id, payload: { name: e.target.value } });
+                      }}
+                    />
+                    <Input className="h-8" type="color" value={category.color} onChange={(e) => updateCategory.mutate({ id: category.id, payload: { color: e.target.value } })} />
+                    <Button variant="danger" size="sm" onClick={() => deleteCategory.mutate(category.id)} disabled={deleteCategory.isPending}>删除</Button>
+                  </div>
+                ))}
+                {!categories.length && <EmptyState title="还没有分类" description="添加分类后可以在博主选择器里快速筛选。" icon={<UserRoundCheck className="h-5 w-5" />} />}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TimeRangePicker({
   value,
   preset,
   error,
   onPresetChange,
   onCustomChange,
+  compact = false,
 }: {
   value: string;
   preset: TimePreset;
   error: string;
   onPresetChange: (preset: TimePreset) => void;
   onCustomChange: (start: string, end: string) => void;
+  compact?: boolean;
 }) {
   const { start, end } = splitTimeRange(value);
+  const primaryPresetKeys = new Set<TimePreset>(['7d', '30d', 'all']);
+  const primaryPresets = compact ? TIME_PRESETS.filter((item) => primaryPresetKeys.has(item.key)) : TIME_PRESETS;
+  const secondaryPresets = compact ? TIME_PRESETS.filter((item) => !primaryPresetKeys.has(item.key)) : [];
+  const [showMoreTime, setShowMoreTime] = useState(!compact || !primaryPresetKeys.has(preset));
+
+  useEffect(() => {
+    if (compact && !primaryPresetKeys.has(preset)) {
+      setShowMoreTime(true);
+    }
+  }, [compact, preset]);
+
   return (
     <div className="space-y-3 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-3">
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-        {TIME_PRESETS.map((item) => (
+      <div className={cn('grid grid-cols-2 gap-2', compact ? 'sm:grid-cols-3' : 'sm:grid-cols-5')}>
+        {primaryPresets.map((item) => (
           <Button
             key={item.key}
             type="button"
@@ -2101,14 +2841,39 @@ function TimeRangePicker({
           </Button>
         ))}
       </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="开始日期">
-          <Input type="date" value={start} max={todayString()} onChange={(event) => onCustomChange(event.target.value, end)} />
-        </Field>
-        <Field label="结束日期">
-          <Input type="date" value={end} max={todayString()} onChange={(event) => onCustomChange(start, event.target.value)} />
-        </Field>
-      </div>
+      {compact && (
+        <Button type="button" variant="ghost" size="sm" className="w-full" onClick={() => setShowMoreTime((value) => !value)}>
+          {showMoreTime ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+          {showMoreTime ? '收起更多时间' : '更多时间'}
+        </Button>
+      )}
+      {(!compact || showMoreTime) && (
+        <div className="space-y-3">
+          {secondaryPresets.length > 0 && (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-2">
+              {secondaryPresets.map((item) => (
+                <Button
+                  key={item.key}
+                  type="button"
+                  variant={preset === item.key ? 'default' : 'secondary'}
+                  size="sm"
+                  onClick={() => onPresetChange(item.key)}
+                >
+                  {item.label}
+                </Button>
+              ))}
+            </div>
+          )}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="开始日期">
+              <Input type="date" value={start} max={todayString()} onChange={(event) => onCustomChange(event.target.value, end)} />
+            </Field>
+            <Field label="结束日期">
+              <Input type="date" value={end} max={todayString()} onChange={(event) => onCustomChange(start, event.target.value)} />
+            </Field>
+          </div>
+        </div>
+      )}
       <div className={cn('rounded-lg border px-3 py-2 text-sm', error ? 'border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] text-[hsl(var(--danger))]' : 'border-[hsl(var(--line))] bg-[hsl(var(--panel))] text-[hsl(var(--muted))]')}>
         {error || `实际范围：${value}${preset === 'all' ? '（最近一年）' : ''}`}
       </div>
@@ -2170,11 +2935,7 @@ function TaskDetailPage({ id }: { id: number }) {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-2xl font-semibold">{displayTaskTitle(task)}</h2>
-        <p className="mt-1 text-sm text-[hsl(var(--muted))]">#{task.id} · {task.username || '-'} · {task.created_at}</p>
-      </div>
-      <ActionBar>
+      <TaskHeroPanel task={task} nowMs={nowMs}>
         <Button variant="secondary" onClick={() => queryClient.invalidateQueries({ queryKey: ['task', id] })}>
           <RefreshCcw className="h-4 w-4" />
           刷新
@@ -2214,15 +2975,10 @@ function TaskDetailPage({ id }: { id: number }) {
         >
           复制错误信息
         </Button>
-      </ActionBar>
+      </TaskHeroPanel>
       {copyStatus && <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2 text-sm text-[hsl(var(--muted))]">{copyStatus}</div>}
 
-      <div className="grid gap-3 md:grid-cols-4">
-        <InfoCard title="状态" value={displayStatus(task.status)} />
-        <InfoCard title="开始时间" value={task.started_at || '-'} />
-        <InfoCard title="结束时间" value={task.finished_at || '-'} />
-        <InfoCard title="重试次数" value={`${task.retry_count}/${task.max_retries}`} />
-      </div>
+      <TaskStatsGrid task={task} />
 
       {adaptiveThrottleApplied && (
         <Card>
@@ -2252,18 +3008,7 @@ function TaskDetailPage({ id }: { id: number }) {
         </Card>
       )}
 
-      <div className="grid gap-3 md:grid-cols-3">
-        <InfoCard title="最后重试" value={task.last_retry_at || '-'} />
-        <InfoCard title="错误类型" value={task.last_error_type ? statusLabel(task.last_error_type) : '-'} />
-        <InfoCard title="错误" value={task.error || '暂无错误'} />
-      </div>
-
-      <div className="grid gap-3 md:grid-cols-4">
-        <InfoCard title={task.task_type === 'profile' ? '资料文件' : '采集记录'} value={String(task.task_type === 'profile' ? task.summary?.files ?? 0 : task.summary?.records ?? 0)} />
-        <InfoCard title="媒体文件" value={String(task.summary?.media_files ?? 0)} />
-        <InfoCard title="互动合计" value={`${task.summary?.favorites ?? 0}/${task.summary?.retweets ?? 0}/${task.summary?.replies ?? 0}`} />
-        <InfoCard title="输出大小" value={formatBytes(task.summary?.total_bytes ?? 0)} />
-      </div>
+      <TaskDiagnosticsPanel task={task} />
 
       <div className="grid gap-4 xl:grid-cols-[1fr_0.8fr]">
         <Card>
@@ -2944,10 +3689,14 @@ function SchedulesPage() {
   const { data: scheduleData } = useQuery({ queryKey: ['schedules'], queryFn: () => api.schedules(), refetchInterval: 8000 });
   const { data: accountData } = useQuery({ queryKey: ['accounts'], queryFn: () => api.accounts() });
   const { data: proxiesData } = useQuery({ queryKey: ['proxies'], queryFn: () => api.proxies() });
+  const { data: bloggersData } = useQuery({ queryKey: ['bloggers'], queryFn: () => api.bloggers() });
+  const { data: categoriesData } = useQuery({ queryKey: ['blogger-categories'], queryFn: () => api.bloggerCategories() });
   const { data: health } = useQuery({ queryKey: ['health-status'], queryFn: () => api.healthStatus(), refetchInterval: 15000 });
   const schedules = scheduleData?.schedules || [];
   const usableAccounts = (accountData?.accounts || []).filter((account) => USABLE_ACCOUNT_STATUSES.has(account.status));
   const usableProxies = (proxiesData?.proxies || []).filter((proxy) => proxy.enabled && proxy.status === 'active');
+  const bloggers = bloggersData?.bloggers || [];
+  const bloggerCategories = categoriesData?.categories || [];
   const [form, setForm] = useState<ScheduleFormValues>(DEFAULT_SCHEDULE_FORM);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [error, setError] = useState('');
@@ -3025,6 +3774,22 @@ function SchedulesPage() {
       weekdays: prev.weekdays.includes(day) ? prev.weekdays.filter((item) => item !== day) : [...prev.weekdays, day].sort(),
     }));
   };
+  const syncScheduleBloggers = (targetLimits: Record<string, number>) => {
+    setForm((prev) => ({
+      ...prev,
+      targets: Object.keys(targetLimits).join('\n'),
+      target_limits: targetLimits,
+      task_type: 'benchmark_account',
+    }));
+  };
+  const scheduleTargetLimits = Object.fromEntries(
+    String(form.targets || '')
+      .replace(/,/g, '\n')
+      .split('\n')
+      .map((item) => item.trim().replace(/^@/, '').toLowerCase())
+      .filter(Boolean)
+      .map((name) => [name, form.tweet_limit || 10]),
+  );
 
   return (
     <div className="space-y-4">
@@ -3065,6 +3830,14 @@ function SchedulesPage() {
           <Field label="目标博主 / 博主列表">
             <Textarea rows={3} value={form.targets} onChange={(e) => setForm((prev) => ({ ...prev, targets: e.target.value }))} placeholder="每行一个用户名或主页链接" />
           </Field>
+          <BloggerLibrarySelector
+            bloggers={bloggers}
+            categories={bloggerCategories}
+            targetLimits={scheduleTargetLimits}
+            defaultLimit={form.tweet_limit}
+            compact
+            onTargetLimitsChange={syncScheduleBloggers}
+          />
           <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-3">
             <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
               <Field label="批量导入博主">
@@ -4441,7 +5214,7 @@ function ProxyPage() {
         <InfoCard title="可用代理" value={String(proxies.filter((proxy) => proxy.enabled && proxy.status === 'active').length)} />
         <InfoCard title="停用代理" value={String(proxies.filter((proxy) => !proxy.enabled).length)} />
         <InfoCard title="失败次数" value={String(proxies.reduce((sum, proxy) => sum + (proxy.failure_count || 0), 0))} />
-        <InfoCard title="最近检测" value={proxies[0]?.last_checked_at || '-'} />
+        <InfoCard title="平均质量" value={proxies.length ? `${Math.round((proxies.reduce((sum, proxy) => sum + (proxy.quality?.score ?? proxy.health_score ?? 1), 0) / proxies.length) * 100)}%` : '-'} />
       </div>
       {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
 
@@ -4499,10 +5272,12 @@ function ProxyPage() {
                     </td>
                     <td className="px-4 py-3">{proxy.detected_ip || '-'}</td>
                     <td className="px-4 py-3">
-                      <div className="space-y-1 text-xs text-[hsl(var(--muted))]">
+                        <div className="space-y-1 text-xs text-[hsl(var(--muted))]">
+                        <div>质量 {proxyQualityPercent(proxy)} · {riskLevelLabel(proxy.quality?.level)}</div>
                         <div>成功 {proxy.success_count} · 失败 {proxy.failure_count}</div>
                         <div>上次使用：{proxy.last_used_at || '-'}</div>
                         <div>冷却至：{proxy.cooldown_until || '-'}</div>
+                        <div>最近检测：{proxy.last_check_at || proxy.last_checked_at || '-'}</div>
                       </div>
                     </td>
                     <td className="px-4 py-3">{proxy.last_checked_at || '-'}</td>

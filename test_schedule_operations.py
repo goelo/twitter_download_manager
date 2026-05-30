@@ -73,6 +73,7 @@ class ScheduleOperationsTest(unittest.TestCase):
                 return {
                     'text': '@one\nhttps://x.com/two\none\nbad-name!',
                     'default_tweet_limit': 7,
+                    'refresh_profile': False,
                 }
 
         result = asyncio.run(web_app.api_bulk_add_bloggers(FakeRequest(), user={'id': 1, 'role': 'admin'}))
@@ -83,6 +84,39 @@ class ScheduleOperationsTest(unittest.TestCase):
         with web_app.db() as conn:
             row = conn.execute("select default_tweet_limit from tracked_bloggers where screen_name = 'one'").fetchone()
         self.assertEqual(row['default_tweet_limit'], 7)
+
+    def test_blogger_categories_and_profile_fields_round_trip(self):
+        class AddCategoryRequest:
+            async def json(self):
+                return {'name': '财经', 'color': '#22c55e'}
+
+        category = asyncio.run(web_app.api_add_blogger_category(AddCategoryRequest(), user={'id': 1, 'role': 'admin'}))['category']
+
+        class AddBloggerRequest:
+            async def json(self):
+                return {
+                    'screen_name': '@market',
+                    'default_tweet_limit': 6,
+                    'category_id': category['id'],
+                    'refresh_profile': False,
+                }
+
+        blogger = asyncio.run(web_app.api_add_blogger(AddBloggerRequest(), user={'id': 1, 'role': 'admin'}))['blogger']
+        self.assertEqual(blogger['category_name'], '财经')
+        self.assertIsNone(blogger['avatar_url'])
+
+        class UpdateBloggerRequest:
+            async def json(self):
+                return {'avatar_url': 'https://example.test/avatar.jpg', 'display_name': 'Market'}
+
+        updated = asyncio.run(web_app.api_update_blogger(blogger['id'], UpdateBloggerRequest(), user={'id': 1, 'role': 'admin'}))['blogger']
+        self.assertEqual(updated['avatar_url'], 'https://example.test/avatar.jpg')
+        self.assertEqual(updated['display_name'], 'Market')
+
+        web_app.api_delete_blogger_category(category['id'], user={'id': 1, 'role': 'admin'})
+        with web_app.db() as conn:
+            row = conn.execute("select category_id from tracked_bloggers where screen_name = 'market'").fetchone()
+        self.assertIsNone(row['category_id'])
 
     def test_monitor_first_run_creates_baseline_without_task(self):
         account_id = self.add_account()

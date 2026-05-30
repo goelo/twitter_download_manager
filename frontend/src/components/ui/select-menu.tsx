@@ -30,7 +30,7 @@ export function SelectMenu({ value, onValueChange, options, placeholder, classNa
     >
       <SelectPrimitive.Trigger
         className={cn(
-          'inline-flex h-10 w-full min-w-0 items-center justify-between gap-2 rounded-full border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-4 text-left text-sm text-[hsl(var(--text))] outline-none transition-all duration-200 ease-out focus:ring-2 focus:ring-[rgba(14,165,233,0.28)] focus:ring-offset-1 focus:ring-offset-[hsl(var(--bg))] disabled:cursor-not-allowed disabled:opacity-50',
+          'inline-flex h-10 w-full min-w-0 items-center justify-between gap-2 rounded-full border border-[hsl(var(--line))] bg-[rgba(15,23,42,0.82)] px-4 text-left text-sm text-[hsl(var(--text))] outline-none transition-colors duration-200 ease-out hover:border-[rgba(96,165,250,0.5)] focus:border-[hsl(var(--primary))] focus:ring-2 focus:ring-[rgba(14,165,233,0.28)] disabled:cursor-not-allowed disabled:opacity-50',
           triggerClassName,
           className,
         )}
@@ -45,7 +45,7 @@ export function SelectMenu({ value, onValueChange, options, placeholder, classNa
           position="popper"
           sideOffset={6}
           className={cn(
-            'z-50 max-h-72 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] text-sm text-[hsl(var(--text))] shadow-[0_18px_42px_rgba(2,8,23,0.45)]',
+            'z-50 max-h-72 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md border border-[hsl(var(--line))] bg-[hsl(var(--panel))] text-sm text-[hsl(var(--text))] shadow-[0_18px_42px_rgba(2,8,23,0.45)]',
             contentClassName,
           )}
         >
@@ -55,7 +55,7 @@ export function SelectMenu({ value, onValueChange, options, placeholder, classNa
                 key={option.value || EMPTY_VALUE}
                 value={option.value === '' ? EMPTY_VALUE : option.value}
                 disabled={option.disabled}
-                className="relative flex min-h-9 cursor-pointer select-none items-center rounded-md py-2 pl-8 pr-3 outline-none data-[disabled]:pointer-events-none data-[highlighted]:bg-[rgba(14,165,233,0.14)] data-[disabled]:opacity-45"
+                className="relative flex min-h-9 cursor-pointer select-none items-center rounded-md py-2 pl-8 pr-3 outline-none data-[disabled]:pointer-events-none data-[highlighted]:bg-[rgba(14,165,233,0.14)] data-[highlighted]:text-[hsl(var(--text))] data-[disabled]:opacity-45"
               >
                 <SelectPrimitive.ItemIndicator className="absolute left-2 inline-flex h-4 w-4 items-center justify-center text-[hsl(var(--primary-dark))]">
                   <Check className="h-4 w-4" />

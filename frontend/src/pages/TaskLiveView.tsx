@@ -1,12 +1,112 @@
 import { useQuery } from '@tanstack/react-query';
 import { Fragment, useEffect, useState } from 'react';
-import { ArrowLeft, ChevronDown, ChevronRight, ExternalLink, Image as ImageIcon, Video } from 'lucide-react';
+import { Activity, ArrowLeft, ChevronDown, ChevronRight, ExternalLink, Heart, Image as ImageIcon, Video } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../lib/api';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader } from '../components/ui/card';
 
 const PAGE_SIZE = 10;
+
+type LiveStatTone = 'sky' | 'emerald' | 'violet' | 'rose';
+
+const liveStatToneClass: Record<LiveStatTone, { border: string; bg: string; icon: string; text: string; stroke: string; track: string }> = {
+  sky: {
+    border: 'border-[rgba(56,189,248,0.34)]',
+    bg: 'bg-[rgba(14,165,233,0.10)]',
+    icon: 'text-sky-300',
+    text: 'text-sky-100',
+    stroke: '#38bdf8',
+    track: 'rgba(56,189,248,0.16)',
+  },
+  emerald: {
+    border: 'border-[rgba(52,211,153,0.34)]',
+    bg: 'bg-[rgba(16,185,129,0.10)]',
+    icon: 'text-emerald-300',
+    text: 'text-emerald-100',
+    stroke: '#34d399',
+    track: 'rgba(52,211,153,0.16)',
+  },
+  violet: {
+    border: 'border-[rgba(167,139,250,0.34)]',
+    bg: 'bg-[rgba(139,92,246,0.10)]',
+    icon: 'text-violet-300',
+    text: 'text-violet-100',
+    stroke: '#a78bfa',
+    track: 'rgba(167,139,250,0.16)',
+  },
+  rose: {
+    border: 'border-[rgba(251,113,133,0.36)]',
+    bg: 'bg-[rgba(244,63,94,0.10)]',
+    icon: 'text-rose-300',
+    text: 'text-rose-100',
+    stroke: '#fb7185',
+    track: 'rgba(251,113,133,0.16)',
+  },
+};
+
+function clampPercent(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, value));
+}
+
+function percentFromValue(value: number, baseline: number) {
+  if (value <= 0) return 0;
+  return clampPercent((value / Math.max(value, baseline)) * 100);
+}
+
+function LiveStatCard({
+  icon: Icon,
+  label,
+  value,
+  detail,
+  percent,
+  tone,
+}: {
+  icon: typeof Activity;
+  label: string;
+  value: string;
+  detail: string;
+  percent: number;
+  tone: LiveStatTone;
+}) {
+  const toneClass = liveStatToneClass[tone];
+  const safePercent = clampPercent(percent);
+
+  return (
+    <Card className={`${toneClass.border} ${toneClass.bg}`}>
+      <CardContent>
+        <div className="flex items-center gap-4">
+          <div className="relative h-[72px] w-[72px] shrink-0" aria-hidden="true">
+            <svg className="h-[72px] w-[72px]" viewBox="0 0 72 72">
+              <circle cx="36" cy="36" r="28" fill="none" stroke={toneClass.track} strokeWidth="8" />
+              <circle
+                cx="36"
+                cy="36"
+                r="28"
+                fill="none"
+                pathLength="100"
+                stroke={toneClass.stroke}
+                strokeDasharray={`${safePercent} ${100 - safePercent}`}
+                strokeLinecap="round"
+                strokeWidth="8"
+                transform="rotate(-90 36 36)"
+              />
+            </svg>
+            <div className={`absolute inset-0 flex items-center justify-center ${toneClass.icon}`}>
+              <Icon className="h-5 w-5" />
+            </div>
+          </div>
+          <div className="min-w-0">
+            <div className="text-sm text-muted-foreground">{label}</div>
+            <div className={`mt-1 truncate text-3xl font-bold leading-tight ${toneClass.text}`}>{value}</div>
+            <div className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{detail}</div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 function displayLiveTaskTitle(task: { title: string; task_type: string }) {
   const title = (task.title || '').trim();
@@ -78,44 +178,10 @@ export function TaskLiveView() {
 
       {/* 统计卡片 */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Card>
-          <CardHeader className="pb-2">
-            <div className="text-sm text-muted-foreground">总推文数</div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold">{total}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <div className="text-sm text-muted-foreground flex items-center gap-1">
-              <ImageIcon className="w-4 h-4" />
-              本页图片
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold">{imageCount}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <div className="text-sm text-muted-foreground flex items-center gap-1">
-              <Video className="w-4 h-4" />
-              本页视频
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold">{videoCount}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <div className="text-sm text-muted-foreground">本页互动</div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold">{totalInteractions.toLocaleString()}</div>
-          </CardContent>
-        </Card>
+        <LiveStatCard icon={Activity} label="总推文数" value={total.toLocaleString()} detail={`当前显示 ${items.length} 条`} percent={percentFromValue(total, 100)} tone="sky" />
+        <LiveStatCard icon={ImageIcon} label="本页图片" value={imageCount.toLocaleString()} detail={`占本页 ${items.length ? Math.round((imageCount / items.length) * 100) : 0}%`} percent={items.length ? (imageCount / items.length) * 100 : 0} tone="emerald" />
+        <LiveStatCard icon={Video} label="本页视频" value={videoCount.toLocaleString()} detail={`含动图与视频`} percent={items.length ? (videoCount / items.length) * 100 : 0} tone="violet" />
+        <LiveStatCard icon={Heart} label="本页互动" value={totalInteractions.toLocaleString()} detail="点赞、转推、评论合计" percent={percentFromValue(totalInteractions, 1000)} tone="rose" />
       </div>
 
       {/* 数据表格 */}
