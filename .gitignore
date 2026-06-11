@@ -11,9 +11,9 @@ frontend/*.tsbuildinfo
 *.local.err.log
 
 web_data/
-data/
-downloads/
-output/
+/data/
+/downloads/
+/output/
 
 .env
 .env.*
