@@ -19,6 +19,18 @@ from backend.shared.url_utils import quote_url
 
 AUTHORIZATION = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA'
 DEFAULT_TIMEOUT = (3.05, 16)
+# 媒体下载经轮换代理（如 kookeey）时 TLS 握手可达数秒，connect 需比 API 请求宽松
+MEDIA_DOWNLOAD_TIMEOUT = (10, 30)
+
+
+def normalize_timeout(timeout):
+    # requests 风格的 (connect, read) 元组在 httpx 中会被解析为 pool=None，
+    # 连接池满时请求会无限等待（媒体下载曾因此整体挂死），统一补上 pool/write 超时。
+    if isinstance(timeout, (tuple, list)):
+        connect = float(timeout[0])
+        read = float(timeout[1] if len(timeout) > 1 else timeout[0])
+        return httpx.Timeout(connect=connect, read=read, write=read, pool=30)
+    return timeout
 
 
 class CrawlerError(RuntimeError):
@@ -427,6 +439,7 @@ class CrawlerClient:
         return self._request_with_retries(url, request_headers, timeout, quote, media=True).content
 
     def _request_with_retries(self, url, headers, timeout, should_quote, media=False):
+        timeout = normalize_timeout(timeout)
         last_error = None
         for attempt in range(1, self.limits.max_retries + 1):
             try:
@@ -472,12 +485,13 @@ class AsyncCrawlerClient:
         self.headers = dict(headers or standard_headers(cookie))
         self.limits = RuntimeLimits.from_env()
         limits = httpx.Limits(max_connections=max_connections, max_keepalive_connections=max_connections)
-        self.client = httpx.AsyncClient(proxy=self.proxy, limits=limits)
+        self.client = httpx.AsyncClient(proxy=self.proxy, limits=limits, timeout=normalize_timeout(DEFAULT_TIMEOUT))
 
     async def aclose(self):
         await self.client.aclose()
 
     async def get(self, url, headers=None, timeout=DEFAULT_TIMEOUT, quote=True, media=False):
+        timeout = normalize_timeout(timeout)
         request_headers = dict(self.headers)
         if headers:
             request_headers.update(headers)

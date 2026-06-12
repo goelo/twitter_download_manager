@@ -8,7 +8,7 @@ import json
 from backend.crawler.output.cache_gen import cache_gen
 from backend.crawler.output.csv_gen import csv_gen
 from backend.crawler.output.md_gen import md_gen
-from backend.crawler.runtime.crawler_runtime import AsyncCrawlerClient, CrawlerClient, CrawlerError, RequestBudget, classify_exception, media_download_retries, page_delay
+from backend.crawler.runtime.crawler_runtime import MEDIA_DOWNLOAD_TIMEOUT, AsyncCrawlerClient, CrawlerClient, CrawlerError, RequestBudget, classify_exception, media_download_retries, page_delay
 from backend.crawler.runtime.user_info import User_info
 from backend.shared.proxy_utils import proxy_for_httpx
 from backend.shared.url_utils import quote_url
@@ -389,7 +389,7 @@ def download_control(_user_info):
                 try:
                     async with semaphore:
                         global down_count
-                        response = await client.get(quote_url(url), timeout=(3.05, 16), media=True)        #如果出现第五次或以上的下载失败,且确认不是网络问题,可以适当降低最大并发数量
+                        response = await client.get(quote_url(url), timeout=MEDIA_DOWNLOAD_TIMEOUT, media=True)        #如果出现第五次或以上的下载失败,且确认不是网络问题,可以适当降低最大并发数量
                         if response.status_code == 404:
                             raise Exception('404')
                         down_count += 1

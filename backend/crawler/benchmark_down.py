@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from backend.crawler.runtime.crawler_runtime import AsyncCrawlerClient, CrawlerClient, CrawlerError, RequestBudget, classify_exception, media_download_retries, page_delay
+from backend.crawler.runtime.crawler_runtime import MEDIA_DOWNLOAD_TIMEOUT, AsyncCrawlerClient, CrawlerClient, CrawlerError, RequestBudget, classify_exception, media_download_retries, page_delay
 from backend.shared.proxy_utils import proxy_for_httpx
 from backend.shared.url_utils import quote_url
 
@@ -283,7 +283,7 @@ class BenchmarkAccountDownloader:
             while True:
                 try:
                     async with semaphore:
-                        response = await client.get(quote_url(url), timeout=(3.05, 16), media=True)
+                        response = await client.get(quote_url(url), timeout=MEDIA_DOWNLOAD_TIMEOUT, media=True)
                     with open(file_path, 'wb') as f:
                         f.write(response.content)
                     self.download_count += 1

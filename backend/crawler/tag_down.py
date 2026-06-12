@@ -9,7 +9,7 @@ import json
 import hashlib
 from datetime import datetime
 from urllib.parse import quote
-from backend.crawler.runtime.crawler_runtime import AsyncCrawlerClient, CrawlerClient, classify_exception, media_download_retries, page_delay
+from backend.crawler.runtime.crawler_runtime import MEDIA_DOWNLOAD_TIMEOUT, AsyncCrawlerClient, CrawlerClient, classify_exception, media_download_retries, page_delay
 from backend.shared.proxy_utils import proxy_for_httpx
 from backend.shared.transaction_generate import get_transaction_id
 from backend.shared.transaction_generate import get_url_path
@@ -106,7 +106,7 @@ def download_control(media_lst, _csv):
             while True:
                 try:
                     async with semaphore:
-                        response = await client.get(quote_url(url), timeout=(3.05, 16), media=True)        #如果出现第五次或以上的下载失败,且确认不是网络问题,可以适当降低最大并发数量
+                        response = await client.get(quote_url(url), timeout=MEDIA_DOWNLOAD_TIMEOUT, media=True)        #如果出现第五次或以上的下载失败,且确认不是网络问题,可以适当降低最大并发数量
                     with open(_csv_info[6],'wb') as f:  #_csv_info[6] : Saved Path
                         f.write(response.content)
                     break

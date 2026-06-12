@@ -8,7 +8,7 @@ import time
 import json
 from datetime import datetime
 from urllib.parse import quote
-from backend.crawler.runtime.crawler_runtime import AsyncCrawlerClient, CrawlerClient, media_download_retries, page_delay
+from backend.crawler.runtime.crawler_runtime import MEDIA_DOWNLOAD_TIMEOUT, AsyncCrawlerClient, CrawlerClient, media_download_retries, page_delay
 from backend.crawler.tag_down import get_heighest_video_quality
 from backend.crawler.tag_down import hash_save_token
 from backend.crawler.tag_down import stamp2time
@@ -105,7 +105,7 @@ def download_control(media_lst):
             while True:  #下载失败重试次数
                 try:
                     async with semaphore:
-                        response = await client.get(quote_url(url), timeout=(3.05, 16), media=True)        #如果出现第五次或以上的下载失败,且确认不是网络问题,可以适当降低最大并发数量
+                        response = await client.get(quote_url(url), timeout=MEDIA_DOWNLOAD_TIMEOUT, media=True)        #如果出现第五次或以上的下载失败,且确认不是网络问题,可以适当降低最大并发数量
                     with open(_file_name,'wb') as f:
                         f.write(response.content)
                     break
