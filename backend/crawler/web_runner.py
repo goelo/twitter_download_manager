@@ -15,6 +15,22 @@ DEFAULT_MAX_CONCURRENT_REQUESTS = max(1, int(os.environ.get('TW_DEFAULT_MAX_CONC
 MAX_CONCURRENT_REQUESTS_CAP = max(DEFAULT_MAX_CONCURRENT_REQUESTS, int(os.environ.get('TW_MAX_CONCURRENT_REQUESTS_CAP', '16') or 16))
 
 
+# Twitter 雪花 ID 起始纪元（毫秒），用于从推文 ID 反推发布时间
+SNOWFLAKE_EPOCH_MS = 1288834974657
+
+
+def snowflake_timestamp_ms(tweet_id):
+    try:
+        return (int(tweet_id) >> 22) + SNOWFLAKE_EPOCH_MS
+    except (TypeError, ValueError):
+        return 0
+
+
+def since_ids_from_config(config):
+    raw = config.get('since_ids') if isinstance(config.get('since_ids'), dict) else {}
+    return {str(key).lower().lstrip('@'): str(value) for key, value in raw.items() if str(value).isdigit()}
+
+
 def safe_max_concurrent_requests(value):
     try:
         parsed = int(value or DEFAULT_MAX_CONCURRENT_REQUESTS)
@@ -139,9 +155,18 @@ def run_user_media(config, cookie, output_dir):
         media_main.request_budget = RequestBudget(int(config.get('api_budget') or 0))
         print(f'预计 API 调用预算: {media_main.request_budget.max_calls} 次', flush=True)
 
+    since_ids = since_ids_from_config(config)
+    base_start_stamp = media_main.start_time_stamp
     started = time.time()
     for user in users:
         print(f'开始处理用户: {user}', flush=True)
+        # 定时任务增量采集：按上次采集点(推文雪花 ID)抬高本次采集的时间下限
+        since_ms = snowflake_timestamp_ms(since_ids.get(user.lower()))
+        user_start_stamp = max(base_start_stamp, since_ms + 1) if since_ms else base_start_stamp
+        if user_start_stamp > base_start_stamp:
+            print(f'增量采集: @{user} 仅采集 {datetime.fromtimestamp(user_start_stamp / 1000).strftime("%Y-%m-%d %H:%M:%S")} 之后的内容', flush=True)
+        media_main.start_time_stamp = user_start_stamp
+        media_main.backup_stamp = user_start_stamp
         media_main.start_label = True
         media_main.First_Page = True
         media_main.main(User_info(user))

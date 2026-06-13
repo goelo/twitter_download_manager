@@ -2965,6 +2965,9 @@ function TaskDetailPage({ id }: { id: number }) {
         <Button variant="secondary" onClick={() => (window.location.href = `/tasks/${task.id}/download`)}>
           打包下载
         </Button>
+        <Button variant="secondary" onClick={() => (window.location.href = `/tasks/${task.id}/download?format=tgz`)}>
+          打包 TGZ
+        </Button>
         <Button variant="secondary" onClick={() => navigate(`/operation-logs?task_id=${task.id}`)}>
           <ClipboardList className="h-4 w-4" />
           关联运维日志
@@ -3044,7 +3047,7 @@ function TaskDetailPage({ id }: { id: number }) {
             </div>
           </CardHeader>
           <CardContent className="space-y-3 text-sm text-[hsl(var(--muted))]">
-            <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2">打包下载会包含 CSV、Markdown、媒体文件和 summary_report.md。</div>
+            <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2">打包下载会包含 CSV、Markdown、媒体文件和 summary_report.md。支持 ZIP 和 TGZ 两种格式，TGZ 适合后续 scp/rsync 传输。</div>
             <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2">页面和日志已隐藏 Cookie、auth_token、ct0 等敏感字段。</div>
             <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2">生产化建议迁移到官方 API 并单独确认授权、限流和数据留存策略。</div>
           </CardContent>

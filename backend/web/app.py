@@ -15,6 +15,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import tarfile
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -684,6 +685,7 @@ def apply_schema_migrations():
             (6, migration_schedule_monitor_states),
             (7, migration_blogger_categories_and_profiles),
             (8, migration_task_api_call_budget),
+            (9, migration_schedule_collection_checkpoints),
         ]
         for version, migration in migrations:
             if current >= version:
@@ -958,6 +960,25 @@ def migration_schedule_monitor_states(conn):
         );
         create index if not exists idx_schedule_monitor_states_schedule on schedule_monitor_states(schedule_id);
         create index if not exists idx_schedule_monitor_states_checked on schedule_monitor_states(last_checked_at);
+        '''
+    )
+
+
+def migration_schedule_collection_checkpoints(conn):
+    conn.executescript(
+        '''
+        create table if not exists schedule_collection_checkpoints (
+            id integer primary key autoincrement,
+            schedule_id integer not null,
+            screen_name text not null,
+            last_tweet_id text not null,
+            last_tweet_url text,
+            last_collected_at text,
+            created_at text not null,
+            updated_at text not null,
+            unique(schedule_id, screen_name)
+        );
+        create index if not exists idx_schedule_collection_checkpoints_schedule on schedule_collection_checkpoints(schedule_id);
         '''
     )
 
@@ -4566,6 +4587,8 @@ def record_schedule_task_result(task, status, error_type=None, error=''):
         return
     if status == 'completed':
         advance_schedule_monitor_state(task)
+    if status in ('completed', 'partial_failed'):
+        advance_schedule_collection_checkpoints(task)
     with db() as conn:
         row = conn.execute('select * from scheduled_tasks where id = ?', (schedule_id,)).fetchone()
         if not row:
@@ -4608,6 +4631,99 @@ def monitor_interval_due(schedule, config):
 def tweet_id_from_url(url):
     match = re.search(r'/status/(\d+)', str(url or ''))
     return match.group(1) if match else ''
+
+
+# 支持按账号记录采集点(水位线)的任务类型：按账号时间线增量采集
+CHECKPOINT_TASK_TYPES = {'benchmark_account', 'user_media'}
+
+
+def checkpoint_targets_from_config(config):
+    from backend.crawler.benchmark_down import parse_screen_name
+
+    raw_targets = str(config.get('targets') or '').replace(',', '\n').splitlines()
+    targets = []
+    for raw in raw_targets:
+        screen_name = parse_screen_name(raw.strip())
+        if screen_name:
+            targets.append(screen_name.lower())
+    return targets
+
+
+def inject_schedule_since_ids(config, schedule_id):
+    if config.get('task_type') not in CHECKPOINT_TASK_TYPES:
+        return
+    targets = set(checkpoint_targets_from_config(config))
+    if not targets:
+        return
+    with db() as conn:
+        rows = conn.execute(
+            'select screen_name, last_tweet_id from schedule_collection_checkpoints where schedule_id = ?',
+            (schedule_id,),
+        ).fetchall()
+    since_ids = {
+        row['screen_name']: row['last_tweet_id']
+        for row in rows
+        if row['screen_name'] in targets and str(row['last_tweet_id'] or '').isdigit()
+    }
+    if since_ids:
+        config['since_ids'] = since_ids
+
+
+def advance_schedule_collection_checkpoints(task):
+    schedule_id = task.get('schedule_id')
+    if not schedule_id:
+        return
+    try:
+        config = json.loads(task.get('config_json') or '{}')
+    except Exception:
+        config = {}
+    if config.get('monitor_new_content') or config.get('monitor_triggered'):
+        return
+    if config.get('task_type') not in CHECKPOINT_TASK_TYPES:
+        return
+    latest = {}
+    with db() as conn:
+        rows = conn.execute('select screen_name, tweet_url from task_items where task_id = ?', (task['id'],)).fetchall()
+        for row in rows:
+            screen_name = str(row['screen_name'] or '').strip().lstrip('@').lower()
+            tweet_id = tweet_id_from_url(row['tweet_url'])
+            if not screen_name or not tweet_id:
+                continue
+            entry = latest.get(screen_name)
+            if not entry or int(tweet_id) > int(entry[0]):
+                latest[screen_name] = (tweet_id, row['tweet_url'])
+        current_time = now()
+        advanced = {}
+        for screen_name, (tweet_id, tweet_url) in latest.items():
+            existing = conn.execute(
+                'select last_tweet_id from schedule_collection_checkpoints where schedule_id = ? and screen_name = ?',
+                (schedule_id, screen_name),
+            ).fetchone()
+            if existing and str(existing['last_tweet_id'] or '').isdigit() and int(existing['last_tweet_id']) >= int(tweet_id):
+                continue
+            conn.execute(
+                '''
+                insert into schedule_collection_checkpoints
+                  (schedule_id, screen_name, last_tweet_id, last_tweet_url, last_collected_at, created_at, updated_at)
+                values (?, ?, ?, ?, ?, ?, ?)
+                on conflict(schedule_id, screen_name) do update set
+                  last_tweet_id = excluded.last_tweet_id,
+                  last_tweet_url = excluded.last_tweet_url,
+                  last_collected_at = excluded.last_collected_at,
+                  updated_at = excluded.updated_at
+                ''',
+                (schedule_id, screen_name, tweet_id, tweet_url, current_time, current_time, current_time),
+            )
+            advanced[screen_name] = tweet_id
+    if advanced:
+        append_operation_log(
+            'info',
+            'collection_checkpoint_advanced',
+            '采集点已更新: ' + ', '.join(f'@{name}' for name in sorted(advanced)),
+            task_id=task.get('id'),
+            schedule_id=schedule_id,
+            details={'checkpoints': advanced},
+        )
 
 
 def latest_tweet_for_monitor(screen_name, account, proxy_value=''):
@@ -4803,6 +4919,8 @@ def advance_schedule_monitor_state(task):
 
 
 def create_queued_task(user_id, account_id, config, resource_mode='manual', schedule_id=None):
+    if schedule_id and resource_mode in ('scheduled', 'scheduled_manual'):
+        inject_schedule_since_ids(config, schedule_id)
     task_dir = TASKS_DIR / datetime.now().strftime('%Y%m%d_%H%M%S_%f')
     task_dir.mkdir(parents=True, exist_ok=True)
     log_path = task_dir / 'task.log'
@@ -5412,6 +5530,8 @@ def run_task(task, worker_id='worker-1'):
     if refreshed:
         write_summary_report(refreshed)
         safe_sync_task_to_result_db(refreshed)
+        if status in {'completed', 'partial_failed'}:
+            auto_archive_task(refreshed)
     append_operation_log(
         'info' if status == 'completed' else 'error',
         'task_finished',
@@ -6067,19 +6187,109 @@ def delete_task(task_id: int, user=Depends(require_user)):
     return RedirectResponse('/tasks', status_code=303)
 
 
+ARCHIVE_EXCLUDED_FILES = {'account_session.json', 'task_config.json'}
+
+
+def iter_archive_members(output_dir: Path):
+    for path in sorted(output_dir.rglob('*')):
+        if not path.is_file():
+            continue
+        if path.name in ARCHIVE_EXCLUDED_FILES:
+            continue
+        # 排除任务目录顶层已有的归档，避免归档互相嵌套
+        if path.parent == output_dir and path.suffix in {'.zip', '.tgz'}:
+            continue
+        yield path
+
+
+def build_task_archive(task_id: int, output_dir: Path, fmt: str, archive_name: str = None) -> Path:
+    if not archive_name:
+        archive_name = f'task-{task_id}.{"tgz" if fmt == "tgz" else "zip"}'
+    archive_path = output_dir / archive_name
+    if fmt == 'tgz':
+        with tarfile.open(archive_path, 'w:gz') as tf:
+            for path in iter_archive_members(output_dir):
+                tf.add(path, arcname=str(path.relative_to(output_dir)))
+    else:
+        with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for path in iter_archive_members(output_dir):
+                zf.write(path, path.relative_to(output_dir))
+    return archive_path
+
+
+def task_archive_basename(task):
+    try:
+        config = json.loads(task['config_json'])
+    except Exception:
+        config = {}
+    target = config.get('targets') or config.get('tag') or ''
+    if isinstance(target, list):
+        target = '_'.join(str(item) for item in target)
+    target = re.sub(r'[^\w@.-]+', '_', str(target).strip(), flags=re.UNICODE).strip('_')
+    target = target[:80] or f'task{task["id"]}'
+    return f'{target}-{datetime.now().strftime("%Y%m%d")}'
+
+
+def auto_archive_task(task):
+    output_dir = Path(task['output_dir'])
+    if not output_dir.exists():
+        return None
+    schedule_id = task['schedule_id'] if 'schedule_id' in task.keys() else None
+    try:
+        archive_name = f'{task_archive_basename(task)}.tgz'
+        archive_path = build_task_archive(task['id'], output_dir, 'tgz', archive_name=archive_name)
+        append_operation_log(
+            'info',
+            'task_auto_archived',
+            f'任务输出已自动打包为 {archive_name}',
+            task_id=task['id'],
+            schedule_id=schedule_id,
+            details={'archive': str(archive_path), 'size': archive_path.stat().st_size},
+        )
+        return archive_path
+    except Exception as exc:
+        append_operation_log(
+            'warning',
+            'task_auto_archive_failed',
+            f'任务输出自动打包失败: {exc}',
+            task_id=task['id'],
+            schedule_id=schedule_id,
+            error_type='auto_archive_failed',
+        )
+        return None
+
+
 @app.get('/tasks/{task_id}/download')
-def download_task(task_id: int, user=Depends(require_user)):
+def download_task(task_id: int, format: str = 'zip', user=Depends(require_user)):
     task = get_task_or_404(task_id, user)
     output_dir = Path(task['output_dir'])
     if not output_dir.exists():
         raise HTTPException(status_code=404, detail='Output not found')
-    zip_path = output_dir / f'task-{task_id}.zip'
-    excluded = {'account_session.json', 'task_config.json'}
-    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for path in output_dir.rglob('*'):
-            if path.is_file() and path.name != zip_path.name and path.name not in excluded:
-                zf.write(path, path.relative_to(output_dir))
-    return FileResponse(zip_path, filename=zip_path.name)
+    fmt = format.lower()
+    if fmt not in {'zip', 'tgz'}:
+        raise HTTPException(status_code=400, detail='format must be zip or tgz')
+    archive_path = build_task_archive(task_id, output_dir, fmt)
+    media_type = 'application/gzip' if fmt == 'tgz' else 'application/zip'
+    return FileResponse(archive_path, filename=archive_path.name, media_type=media_type)
+
+
+@app.post('/api/tasks/{task_id}/package')
+def package_task(task_id: int, format: str = 'tgz', user=Depends(require_user)):
+    """在服务器上生成归档文件并保留在任务目录中，供后续 scp/rsync 传输。"""
+    task = get_task_or_404(task_id, user)
+    output_dir = Path(task['output_dir'])
+    if not output_dir.exists():
+        raise HTTPException(status_code=404, detail='Output not found')
+    fmt = format.lower()
+    if fmt not in {'zip', 'tgz'}:
+        raise HTTPException(status_code=400, detail='format must be zip or tgz')
+    archive_path = build_task_archive(task_id, output_dir, fmt)
+    return {
+        'task_id': task_id,
+        'format': fmt,
+        'archive': str(archive_path),
+        'size': archive_path.stat().st_size,
+    }
 
 
 @app.get('/accounts', response_class=HTMLResponse)
@@ -6402,6 +6612,8 @@ def api_delete_schedule(schedule_id: int, user=Depends(require_api_user)):
     schedule = get_schedule_or_404(schedule_id, user)
     with db() as conn:
         conn.execute('delete from scheduled_tasks where id = ?', (schedule_id,))
+        conn.execute('delete from schedule_monitor_states where schedule_id = ?', (schedule_id,))
+        conn.execute('delete from schedule_collection_checkpoints where schedule_id = ?', (schedule_id,))
     append_operation_log('warning', 'schedule_deleted', f'删除定时任务: {schedule["name"]}', schedule_id=schedule_id)
     return {'ok': True}
 

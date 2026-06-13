@@ -44,6 +44,11 @@ def parse_screen_name(value):
     return text
 
 
+def tweet_id_from_url(url):
+    match = re.search(r'/status/(\d+)', str(url or ''))
+    return match.group(1) if match else ''
+
+
 def stamp2time(msecs_stamp):
     time_array = time.localtime(msecs_stamp / 1000)
     return time.strftime('%Y-%m-%d %H:%M', time_array)
@@ -137,6 +142,8 @@ class BenchmarkAccountDownloader:
         self.tweet_limit = int(config.get('tweet_limit') or 50)
         raw_target_limits = config.get('target_limits') if isinstance(config.get('target_limits'), dict) else {}
         self.target_limits = {str(key).lower().lstrip('@'): max(1, int(value or self.tweet_limit)) for key, value in raw_target_limits.items()}
+        raw_since_ids = config.get('since_ids') if isinstance(config.get('since_ids'), dict) else {}
+        self.since_ids = {str(key).lower().lstrip('@'): str(value) for key, value in raw_since_ids.items() if str(value).isdigit()}
         self.has_video = bool(config.get('has_video', True))
         self.has_retweet = bool(config.get('has_retweet'))
         self.max_concurrent_requests = int(config.get('max_concurrent_requests') or 2)
@@ -361,6 +368,9 @@ class BenchmarkAccountDownloader:
         saved_tweets = 0
         all_media_jobs = []
         seen_tweets = set()
+        since_id = self.since_ids.get(user['screen_name'].lower())
+        if since_id:
+            print(f'增量采集: @{user["screen_name"]} 仅采集推文 ID > {since_id} 的新内容', flush=True)
         try:
             while saved_tweets < tweet_limit:
                 url = self.tweet_url(user['rest_id'], cursor)
@@ -372,6 +382,8 @@ class BenchmarkAccountDownloader:
                 if not entries or next_cursor == cursor:
                     break
                 stop_for_time = False
+                page_new = 0
+                page_collected = 0
                 for item in entries:
                     if saved_tweets >= tweet_limit:
                         break
@@ -383,14 +395,25 @@ class BenchmarkAccountDownloader:
                         break
                     if tweet['tweet_url'] in seen_tweets:
                         continue
+                    if since_id:
+                        status_id = tweet_id_from_url(tweet['tweet_url'])
+                        # 跳过上次采集点之前的旧推文（置顶推文也走这里，不会误判停止）
+                        if status_id and int(status_id) <= int(since_id):
+                            page_collected += 1
+                            continue
                     seen_tweets.add(tweet['tweet_url'])
                     rows, media_jobs = self.media_rows(tweet, folder_path)
                     for row in rows:
                         csv_file.data_input(row)
                     all_media_jobs.extend(media_jobs)
                     saved_tweets += 1
+                    page_new += 1
                 cursor = next_cursor
                 if stop_for_time:
+                    break
+                # 整页都是已采集过的旧推文，说明已追上上次的采集点
+                if since_id and page_collected and not page_new:
+                    print(f'@{user["screen_name"]} 已到达上次采集点，停止翻页', flush=True)
                     break
         except CrawlerError as exc:
             if exc.error_type != 'budget_exhausted':

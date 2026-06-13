@@ -9,6 +9,7 @@
   <div class="actions">
     <a class="button" href="/tasks">返回</a>
     <a class="button primary" href="/tasks/{{ task.id }}/download">打包下载</a>
+    <a class="button" href="/tasks/{{ task.id }}/download?format=tgz">打包 TGZ</a>
     {% if task.status in ["queued", "running"] %}
       <form method="post" action="/tasks/{{ task.id }}/cancel">
         <button type="submit" class="danger">取消</button>
